@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from psycopg_pool import ConnectionPool
 
 from app import ledger
-from app.auth import CurrentUser, authenticate, get_page_user, get_pool
+from app.auth import AuthenticationUnavailable, CurrentUser, authenticate, get_page_user, get_pool
 from app.config import get_settings
 from app.security import (
     CSRF_COOKIE,
@@ -96,8 +96,8 @@ def login_page(request: Request) -> Response:
 @router.post("/login", response_class=HTMLResponse)
 def login_submit(
     request: Request,
-    email: str = Form(),
-    password: str = Form(),
+    email: str = Form(""),
+    password: str = Form(""),
     csrf_token: str = Form(""),
     pool: ConnectionPool = Depends(get_pool),
 ) -> Response:
@@ -109,7 +109,25 @@ def login_submit(
     ):
         raise HTTPException(403, "Invalid or missing CSRF token")
 
-    user_id = authenticate(pool, email, password)
+    if not email.strip() or not password:
+        return render(
+            request,
+            "login.html",
+            status_code=422,
+            csrf_token=cookie_token,
+            error="Enter your email and password.",
+        )
+
+    try:
+        user_id = authenticate(pool, email, password)
+    except AuthenticationUnavailable:
+        return render(
+            request,
+            "login.html",
+            status_code=503,
+            csrf_token=cookie_token,
+            error="Service temporarily unavailable",
+        )
     if user_id is None:
         return render(
             request,

@@ -9,9 +9,15 @@ def test_system_account_has_no_owner_and_no_login(db, client):
     assert system["user_id"] is None
     assert db.execute("SELECT COUNT(*) AS n FROM accounts WHERE is_system").fetchone()["n"] == 1
 
-    for email in ("system@example.com", "system", "system-funding@example.com", ""):
+    for email, expected_status in (
+        ("system@example.com", 401),
+        ("system", 401),
+        ("system-funding@example.com", 401),
+        ("", 422),
+    ):
         response = client.post("/auth/login", json={"email": email, "password": "test-password"})
-        assert response.status_code == 401
+        assert response.status_code == expected_status
+        assert "access_token" not in response.json()
 
 
 def test_database_forbids_giving_the_system_account_an_owner(db):
