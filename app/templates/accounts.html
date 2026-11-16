@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Accounts · LedgerLite{% endblock %}
+{% block content %}
+<h1>Accounts</h1>
+<table>
+  <thead><tr><th>ID</th><th>Name</th><th class="num">Balance</th><th></th></tr></thead>
+  <tbody>
+  {% for account in accounts %}
+    <tr>
+      <td>{{ account.id }}</td>
+      <td>{{ account.name }}</td>
+      <td class="num">{{ account.balance_cents | money }}</td>
+      <td><a href="/ui/history?account_id={{ account.id }}">History</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Transfer · LedgerLite{% endblock %}
+{% block content %}
+<h1>Transfer</h1>
+<table>
+  <thead><tr><th>ID</th><th>Your account</th><th class="num">Balance</th></tr></thead>
+  <tbody>
+  {% for account in accounts %}
+    <tr><td>{{ account.id }}</td><td>{{ account.name }}</td><td class="num">{{ account.balance_cents | money }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<form method="post" action="/ui/transfer" hx-post="/ui/transfer" hx-target="#result" hx-swap="innerHTML">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" id="idempotency_key" name="idempotency_key" value="{{ idempotency_key }}">
+  <label for="from_account_id">From (your account)</label>
+  <select id="from_account_id" name="from_account_id" required>
+    {% for account in accounts %}
+    <option value="{{ account.id }}">{{ account.id }} · {{ account.name }}</option>
+    {% endfor %}
+  </select>
+  <label for="to_account_id">To (account id)</label>
+  <input id="to_account_id" name="to_account_id" inputmode="numeric" pattern="[0-9]+" required>
+  <label for="amount">Amount (USD)</label>
+  <input id="amount" name="amount" inputmode="decimal" placeholder="10.00" required>
+  <p><button type="submit">Send</button></p>
+</form>
+<div id="result">{% include "_transfer_result.html" %}</div>
+{% endblock %}
