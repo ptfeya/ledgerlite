@@ -6,7 +6,7 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
 from app import ledger
-from app.auth import CurrentUser, authenticate, get_api_user, get_pool
+from app.auth import AuthenticationUnavailable, CurrentUser, authenticate, get_api_user, get_pool
 from app.config import get_settings
 from app.security import create_token
 
@@ -14,8 +14,8 @@ router = APIRouter()
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(min_length=1)
+    password: str = Field(min_length=1)
 
 
 class TokenResponse(BaseModel):
@@ -54,7 +54,10 @@ class EntryOut(BaseModel):
 
 @router.post("/auth/login", response_model=TokenResponse)
 def login(body: LoginRequest, pool: ConnectionPool = Depends(get_pool)) -> TokenResponse:
-    user_id = authenticate(pool, body.email, body.password)
+    try:
+        user_id = authenticate(pool, body.email, body.password)
+    except AuthenticationUnavailable as exc:
+        raise HTTPException(503, "Service temporarily unavailable") from exc
     if user_id is None:
         raise HTTPException(401, "Invalid credentials")
     settings = get_settings()

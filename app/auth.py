@@ -1,13 +1,16 @@
+import logging
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from psycopg_pool import ConnectionPool
+from psycopg import InterfaceError, OperationalError
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app.config import get_settings
 from app.security import SESSION_COOKIE, decode_token, verify_password
 
 _bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,15 +24,24 @@ class LoginRequired(Exception):
     """Raised by page routes when there is no valid session cookie."""
 
 
+class AuthenticationUnavailable(Exception):
+    """Raised when the login database or connection pool is unavailable."""
+
+
 def get_pool(request: Request) -> ConnectionPool:
     return request.app.state.pool
 
 
 def authenticate(pool: ConnectionPool, email: str, password: str) -> int | None:
-    with pool.connection() as conn:
-        row = conn.execute(
-            "SELECT id, password_hash FROM users WHERE email = %s", (email.strip().lower(),)
-        ).fetchone()
+    try:
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id, password_hash FROM users WHERE email = %s", (email.strip().lower(),)
+            ).fetchone()
+    except (OperationalError, InterfaceError, PoolTimeout) as exc:
+        # Exception messages and tracebacks can contain credentials.
+        logger.error("Authentication database unavailable (%s)", type(exc).__name__)
+        raise AuthenticationUnavailable from None
     if row is None or not verify_password(row["password_hash"], password):
         return None
     return row["id"]

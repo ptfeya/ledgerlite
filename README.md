@@ -110,7 +110,10 @@ Every form POST, including login and logout, requires a CSRF token. The JSON API
 - Balances are never stored. They are the sum of an account's ledger entries.
 - Transfers lock both accounts in id order, then check the balance, so concurrent transfers cannot overdraw and opposite transfers cannot deadlock.
 - The database also enforces the invariants: a deferred trigger rejects entries for a transfer that do not sum to zero, and the ledger is append-only.
-- Login error handling is deliberately minimal for now (generic 401, no rate limiting or lockout).
+- Unknown emails and wrong passwords return the same generic 401 error.
+- Login database/pool failures return a generic 503 and log only the exception type.
+- Missing or empty login fields return 422: inline HTML for the UI, JSON for the API.
+- Login rate limiting and lockout are not implemented.
 
 ## Layout
 
