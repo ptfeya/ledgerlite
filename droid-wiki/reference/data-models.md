@@ -1,0 +1,116 @@
+# Data model
+
+LedgerLite stores users, accounts, transfer metadata, and signed ledger entries in four Postgres tables. Balances are calculated, never stored.
+
+## Relationships
+
+```mermaid
+erDiagram
+    users ||--o{ accounts : owns
+    users o|--o{ transfers : initiates
+    accounts ||--o{ transfers : source
+    accounts ||--o{ transfers : destination
+    transfers ||--o{ ledger_entries : groups
+    accounts ||--o{ ledger_entries : receives
+```
+
+The diagram omits the ownerless system-account exception: an account has exactly one user unless `is_system=true`, when it must have none. A transfer's `user_id` is nullable. The schema permits transfers with no entries; the application normally creates two.
+
+Source: `db/schema.sql`. See [Transfers](../features/transfers.md) for transaction behavior.
+
+## Tables and columns
+
+All four tables have `created_at timestamptz NOT NULL DEFAULT now()`. Unless marked nullable, columns below are `NOT NULL`; primary keys are inherently non-null.
+
+### `users`
+
+| Column | Type/default | Constraints |
+| --- | --- | --- |
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` | Primary key |
+| `email` | `text` | Unique; `email = lower(email)` |
+| `password_hash` | `text` | Argon2 hash written by application |
+| `is_admin` | `boolean DEFAULT false` | Non-null |
+
+The database lowercase check is not an email-format validator or whitespace normalizer. An idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` adds `is_admin` to older databases, defaulting existing rows to false.
+
+### `accounts`
+
+| Column | Type/default | Constraints |
+| --- | --- | --- |
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` | Primary key |
+| `user_id` | nullable `bigint` | Foreign key to `users.id` |
+| `name` | `text` | No uniqueness constraint |
+| `currency` | `char(3) DEFAULT 'USD'` | No allowed-currency list |
+| `is_system` | `boolean DEFAULT false` | Controls required ownership |
+
+Check: `(is_system AND user_id IS NULL) OR (NOT is_system AND user_id IS NOT NULL)`. There is no constraint limiting the database to one system account or one Checking account per user.
+
+### `transfers`
+
+| Column | Type/default | Constraints |
+| --- | --- | --- |
+| `id` | `uuid DEFAULT gen_random_uuid()` | Primary key |
+| `user_id` | nullable `bigint` | Foreign key to `users.id` |
+| `idempotency_key` | `text` | Non-null; no database length bound |
+| `request_hash` | `text` | Non-null; no database digest-format constraint |
+| `from_account_id` | `bigint` | Foreign key to `accounts.id` |
+| `to_account_id` | `bigint` | Foreign key to `accounts.id`; must differ from source |
+| `amount_cents` | `bigint` | Must be positive |
+
+`transfers_user_key_uq` uniquely indexes `(user_id, idempotency_key)`. Default Postgres null semantics mean this does not deduplicate keys across rows with null `user_id`. Seed uses that null initiator for funding. The schema does not constrain null initiators to seed code.
+
+Ordinary requests hash `"<source>|<destination>|<amount>"` with SHA-256 in `app/ledger.py`. The application cap of `10^12` cents and header length limit of 255 are not database constraints.
+
+### `ledger_entries`
+
+| Column | Type/default | Constraints |
+| --- | --- | --- |
+| `id` | `bigint GENERATED ALWAYS AS IDENTITY` | Primary key |
+| `transfer_id` | `uuid` | Foreign key to `transfers.id` |
+| `account_id` | `bigint` | Foreign key to `accounts.id` |
+| `amount_cents` | `bigint` | Must be nonzero; negative debit, positive credit |
+
+Foreign keys use Postgres' default no-action behavior, not cascading deletion. No persisted balance column exists: `app/ledger.py` uses `COALESCE(SUM(amount_cents), 0)::bigint` for balances.
+
+## Indexes
+
+Primary keys index each table's `id`; `users.email` also gets its unique-constraint index. Explicit indexes in `db/schema.sql` are:
+
+| Name | Columns | Purpose |
+| --- | --- | --- |
+| `accounts_user_id_idx` | `accounts(user_id)` | Owner account lookup |
+| `transfers_user_key_uq` | `transfers(user_id, idempotency_key)`, unique | User-scoped replay lookup and insertion conflict |
+| `ledger_entries_account_idx` | `ledger_entries(account_id, id)` | Balance aggregation and newest-entry reads |
+| `ledger_entries_transfer_idx` | `ledger_entries(transfer_id)` | Per-transfer balance check |
+
+## Trigger guarantees, precisely
+
+`ledger_entries_balanced` calls `check_transfer_balanced()` after each inserted row as a `DEFERRABLE INITIALLY DEFERRED` constraint trigger. At deferred execution it sums entries for `NEW.transfer_id` and rejects a nonzero total with SQLSTATE `check_violation`.
+
+`ledger_entries_append_only` calls `forbid_ledger_mutation()` before row updates or deletes and raises `ledger_entries is append-only`.
+
+These do **not** enforce exactly two entries, the correspondence of entry accounts/amounts with transfer metadata, required entries for every transfer, account nonnegative balances, matching currencies, ownership, system-account exclusion, or the application's amount cap. Balanced additional inserts for an existing transfer remain possible. The row-mutation trigger does not intercept `TRUNCATE` or changes to `transfers`. Privileged roles can alter the safeguards.
+
+Normal `app/ledger.py` transfers lock both accounts in ID order, validate ownership/currency/system status, check balance, and insert one debit plus one credit in one transaction. See [Security](../security.md) for the distinction between application and database boundaries.
+
+## Schema and seed lifecycle
+
+`app/db.py` explicitly reads and executes `db/schema.sql`, then commits. The schema uses `CREATE ... IF NOT EXISTS`, replaces trigger functions, and drops/recreates triggers. This is idempotent schema application with a targeted admin-column upgrade, not a general migration framework. Server startup in `app/main.py` does not call it.
+
+`uv run python -m app.seed` applies the schema before seeding. `seed()` immediately returns false if **any user exists**. It does not repair partial demo data, reset balances, rotate passwords, or reset admin privileges.
+
+On an empty database it creates:
+
+| Owner | Account | Opening cents |
+| --- | --- | --- |
+| No user | `System funding` | `-250000`, derived from funding debits |
+| `alice@example.com` | `Checking` | `100000` |
+| `alice@example.com` | `Savings` | `50000` |
+| `bob@example.com` | `Checking` | `75000` |
+| `bob@example.com` | `Savings` | `25000` |
+
+This creates two ordinary users, five accounts, four transfers, and eight entries. Four balanced system-to-user funding transfers use null `user_id`, `request_hash='seed'`, and `seed-funding-<account_id>` keys. This direct ledger insertion in `app/seed.py` is the funding exception; routes must use `app/ledger.py`.
+
+Optional `--admin-email <EMAIL>` still runs after the demo seed is skipped. `seed_admin()` trims/lowercases email and creates an admin using the seed password, or promotes an existing user without changing their password or creating accounts. A plain seed rerun neither grants nor revokes admin access.
+
+Regression sources include `tests/test_admin_seed.py`, `tests/test_system_account.py`, `tests/test_ledger_zero_sum.py`, and `tests/test_idempotency.py`. See [Accounts and history](../features/accounts-and-history.md) for derived balances and visibility.
