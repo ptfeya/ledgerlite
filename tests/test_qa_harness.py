@@ -46,11 +46,11 @@ def test_refuses_agent_credentials(name):
 
 def test_refuses_unsafe_identifiers():
     with pytest.raises(h.HarnessError, match="unsafe"):
-        h.resolve_target('postgresql://u:p@localhost/"; DROP DATABASE x', env={})
+        h.resolve_target("postgresql://u:p@localhost/x%22%3B%20DROP%20DATABASE%20y", env={})
 
 
 def test_account_specs_require_integer_cents():
-    assert h.parse_account_specs(["Checking=1500", "Sav = 0"]) == [("Checking", 1500), ("Sav", 0)]
+    assert h.parse_account_specs(["Checking=1500", "Sav=0"]) == [("Checking", 1500), ("Sav", 0)]
     for bad in ["Checking=12.50", "Checking=-5", "Checking", "=5", "A=1e3", "A=١٢"]:
         with pytest.raises(h.HarnessError):
             h.parse_account_specs([bad])

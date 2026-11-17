@@ -72,7 +72,10 @@ def resolve_target(database_url: str, env: dict[str, str] | None = None) -> Targ
     if present:
         raise HarnessError(f"refusing to run with agent credentials in the environment: {present}")
 
-    info = conninfo_to_dict(database_url)
+    try:
+        info = conninfo_to_dict(database_url)
+    except psycopg.ProgrammingError as exc:
+        raise HarnessError("unparseable database URL") from exc
     host = info.get("host") or ""
     # An empty host or a path means a local unix socket.
     if host and host not in LOOPBACK_HOSTS and not host.startswith("/"):
@@ -473,6 +476,8 @@ def cmd_up(target: Target, settings, reset: bool) -> dict:
 
 def _port_free(port: int) -> bool:
     with socket.socket() as sock:
+        # uvicorn binds with SO_REUSEADDR, so a port in TIME_WAIT is usable.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:
