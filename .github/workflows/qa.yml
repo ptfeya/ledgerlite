@@ -54,17 +54,23 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
+      # System Python lives outside the runner's home, so the separate QA app user can run it.
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --python /usr/bin/python3.12
+      # Stale output committed in a PR must never be published as this run's result.
+      - name: Reset QA output
+        run: rm -rf qa-results qa-output.txt
       - name: Use base-branch QA instructions
         id: skills
         run: |
           if [ -f base/.factory/skills/qa/SKILL.md ]; then
-            rm -rf .factory
-            cp -R base/.factory .factory
-            # AGENTS.md is also instructions the keyed agent reads, so it comes from base too.
-            rm -f AGENTS.md
-            if [ -f base/AGENTS.md ]; then cp base/AGENTS.md AGENTS.md; fi
+            # Instructions are any .factory directory, AGENTS.md or CLAUDE.md, at any depth
+            # (nested ones such as app/AGENTS.md also apply to the agent).
+            find . \( -path ./base -o -path ./.git -o -path ./.venv \) -prune -o \
+              \( \( -name .factory -type d \) -o -name AGENTS.md -o -name CLAUDE.md \) -print0 | xargs -0 -r rm -rf
+            (cd base && find . -path ./.git -prune -o \
+              \( \( -name .factory -type d \) -o -name AGENTS.md -o -name CLAUDE.md \) -print0 \
+              | xargs -0 -r cp -R --parents -t ..)
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
@@ -102,8 +108,25 @@ jobs:
         run: |
           curl -fsSL https://app.factory.ai/cli | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # The PR's application code runs here, as a different OS user with a scrubbed
+      # environment, in a step that has no secrets. It starts before (and outlives) the
+      # step that holds FACTORY_API_KEY. That user cannot read the agent's process
+      # environment, which is what keeps the key out of PR-controlled code.
+      - name: Start QA application server
+        if: steps.skills.outputs.present == 'true'
+        run: |
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin qa-app
+          sudo chmod o+x "$HOME"
+          chmod -R a+rX .
+          S=.factory/skills/qa/scripts/qa-server.sh
+          QA_RUN_AS=qa-app setsid nohup "$S" start > "$RUNNER_TEMP/qa-server.log" 2>&1 < /dev/null &
+          for _ in $(seq 60); do
+            "$S" verify 2>/dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/qa-server.log"
+          exit 1
       - name: Run QA
-        id: qa
         if: steps.skills.outputs.present == 'true'
         continue-on-error: true
         timeout-minutes: 18
@@ -119,7 +142,10 @@ jobs:
           EXTRA=""
           [ "$VIDEO" = "true" ] && EXTRA="$EXTRA Use droid-control Capture and upload video evidence per the qa skill's Evidence Capture rules."
           [ "$COMPOSE" = "true" ] && EXTRA="$EXTRA Run droid-control Compose for each captured flow before upload."
-          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
+          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. A QA application server is already running and verified by .factory/skills/qa/scripts/qa-server.sh verify; reuse it and never start another. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
+      - name: Stop QA application server
+        if: always()
+        run: sudo pkill -u qa-app || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

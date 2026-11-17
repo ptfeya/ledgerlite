@@ -18,9 +18,8 @@ Invoke the `droid-control` skill before interacting with the app. Use its web ro
 No preview deployments exist. Test the branch locally:
 
 1. Postgres up; `DATABASE_URL`, `JWT_SECRET`, `SEED_PASSWORD` set (CI provides them). Locally, load `.env` with `set -a; . ./.env; set +a` and never print it or its values.
-2. Reuse existing state: if `http://localhost:8000/ui/login` already answers, a server is running (for example started for another app's flows). Skip steps 2 and 3 for it.
-3. Otherwise seed with `uv run python -m app.seed`, start `uv run uvicorn app.main:app --port 8000 &`, and poll `http://localhost:8000/ui/login` until ready.
-4. Base URL `http://localhost:8000/ui`.
+2. Follow the orchestrator's Step 4: run `.factory/skills/qa/scripts/qa-server.sh verify` and reuse the server only if it passes. Otherwise run `qa-server.sh start` with the Execute tool's `fireAndForget: true` (a shell `&` is killed when the call returns), then poll `verify`. It uses the throwaway `<db>_qa` database.
+3. Base URL: the output of `qa-server.sh url` plus `/ui` (normally `http://localhost:8000/ui`).
 
 Never fall back to a remote environment. If the server cannot start, report all web tests BLOCKED.
 
@@ -33,7 +32,7 @@ Log in through the form with `alice@example.com` or `bob@example.com`; password 
 - **ui-login**: valid login lands on accounts; wrong password shows an inline error and stays on login; empty fields show a validation error, not a 500.
 - **ui-logout**: logout (a CSRF-protected POST) ends the session; `/ui/accounts` then redirects to login.
 - **ui-accounts**: accounts page shows the user's accounts with formatted balances matching the API cents values. The funding account never appears.
-- **ui-transfer-happy**: submit a valid amount between own accounts or to another user; the result partial confirms it, and balances change by exactly that amount.
+- **ui-transfer-happy**: submit a valid amount to another user's recipient email (sending to yourself is rejected); the result partial confirms it, and balances change by exactly that amount.
 - **ui-recipient-email**: entering a recipient email (e.g. bob@example.com) resolves to that user's Checking account. Unknown email shows a clear error.
 - **ui-transfer-validation**: zero, negative, non-numeric, more than two decimals, and huge amounts show errors; overdraft shows an insufficient-funds error; balances unchanged.
 - **ui-double-submit**: submitting the same form twice must not move money twice.
@@ -49,4 +48,4 @@ Repeat transfer and history as alice and bob; each must see only their own accou
 
 1. **htmx partial not swapped yet.** Wait for the result element to change before snapshotting; each snapshot must differ.
 2. **Seed password mismatch.** Login error for seeded users means `SEED_PASSWORD` differs from the value used at seed time.
-3. **Stale balances.** Assert deltas, not absolute numbers, or re-seed a fresh throwaway database.
+3. **Stale balances.** Assert deltas, not absolute numbers, or restart with `qa-server.sh start`, which recreates the throwaway database (re-seeding alone does not reset it).

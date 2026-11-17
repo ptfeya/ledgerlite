@@ -42,11 +42,11 @@ personas:
     cannot_do: []
 apps:
   api:
-    path_patterns: ['app/routes/api.py', 'app/ledger.py', 'app/auth.py', 'app/security.py', 'db/schema.sql', 'app/seed.py', 'app/config.py', 'app/db.py', 'app/main.py']
+    path_patterns: ['app/routes/api.py', 'app/ledger.py', 'app/auth.py', 'app/security.py', 'db/schema.sql', 'app/seed.py', 'app/config.py', 'app/db.py', 'app/main.py', 'pyproject.toml', 'uv.lock']
     skill: qa-api
     test_tool: curl
   web:
-    path_patterns: ['app/routes/pages.py', 'app/templates/**', 'app/static/**', 'app/ledger.py', 'app/auth.py', 'app/security.py', 'db/schema.sql', 'app/main.py']
+    path_patterns: ['app/routes/pages.py', 'app/templates/**', 'app/static/**', 'app/ledger.py', 'app/auth.py', 'app/security.py', 'db/schema.sql', 'app/main.py', 'pyproject.toml', 'uv.lock']
     skill: qa-web
     test_tool: agent-browser
 feature_flags:
@@ -55,5 +55,5 @@ integrations: {}
 cleanup:
   auto_cleanup: true
   strategy: reset-db
-  instructions: 'QA uses a throwaway Postgres database. Re-run `uv run python -m app.seed` to restore demo data; drop and recreate the database if state is dirty.'
+  instructions: 'QA uses a throwaway Postgres database. Re-seeding does not reset state (seed skips a database that already has users). `qa-server.sh start` drops and recreates the `<db>_qa` database before seeding; use it whenever a reset is needed.'
 failure_learning: suggest_in_report

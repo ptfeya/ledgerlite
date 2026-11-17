@@ -14,9 +14,8 @@ Describes WHAT to verify. The orchestrator picks only flows relevant to the diff
 Test the checked-out branch, never a remote deployment.
 
 1. Ensure Postgres is up and `DATABASE_URL`, `JWT_SECRET`, `SEED_PASSWORD` are set (CI provides them). Locally, load `.env` with `set -a; . ./.env; set +a` and never `cat`, echo, or print it or its values.
-2. Reuse existing state: if `http://localhost:8000/ui/login` already answers, a server is running (for example started for another app's flows), so skip steps 2 and 3 for it. Otherwise seed with `uv run python -m app.seed` and `uv run python -m app.seed --admin-email qa-admin@example.com`.
-3. Otherwise start `uv run uvicorn app.main:app --port 8000 &` and poll `http://localhost:8000/ui/login` until it responds.
-4. Base URL: `http://localhost:8000`. Routes have no `/api` prefix.
+2. Follow the orchestrator's Step 4: run `.factory/skills/qa/scripts/qa-server.sh verify` and reuse the server only if it passes. Otherwise run `qa-server.sh start` with the Execute tool's `fireAndForget: true` (a shell `&` is killed when the call returns), then poll `verify`. It uses the throwaway `<db>_qa` database and seeds the admin persona.
+3. Base URL: the output of `qa-server.sh url` (normally `http://localhost:8000`). Routes have no `/api` prefix.
 
 ## Authentication
 
@@ -44,4 +43,4 @@ Run ownership and reconcile checks as member, counterparty, and admin. Admin mus
 
 1. **Port 5432 taken or Postgres not running.** Server fails at startup or login returns 503. Start `docker compose up -d --wait` or point `DATABASE_URL` at the CI service.
 2. **Seeded user missing.** Login 401 for alice/bob means seed was not run against the same database.
-3. **Stale state.** Balances differ from seed after earlier runs. Re-run `uv run python -m app.seed` or recreate the throwaway database before comparing absolute balances; prefer asserting deltas.
+3. **Stale state.** Balances differ from seed after earlier runs. Re-seeding does not reset it. Restart with `qa-server.sh start`, which recreates the QA database, before comparing absolute balances; prefer asserting deltas.

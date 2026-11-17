@@ -29,25 +29,26 @@ Use `default_target` unless the user names another. LedgerLite has no preview de
 
 ## Step 3: Analyze Git Diff
 
-Run `git diff` (in CI, against the base given in the prompt, e.g. `origin/main...HEAD`). Map changed files to apps using `path_patterns` in config.yaml.
+Diff against an explicit base. In CI use the base given in the prompt (`git diff <base>...HEAD`). Locally use the merge base with the default branch: `git diff $(git merge-base HEAD origin/main)` (fall back to `main`), which covers committed, staged and unstaged changes, plus `git ls-files --others --exclude-standard` for new untracked files. Map changed files to apps using `path_patterns` in config.yaml.
 
+- Runtime dependency changes (`pyproject.toml`, `uv.lock`) are matched to both apps.
 - Files matching no app (`.factory/**`, `docs/**`, `.github/**`, `tests/**`, README) belong to no app. Do not run flows for them.
 - Run only affected apps' sub-skills. Do not load or pre-flight unaffected apps.
 - If no app is affected, report INCONCLUSIVE: "No app code changed -- QA not applicable for this diff."
 
 ## Step 4: Pre-flight (affected apps only)
 
-- Postgres reachable via `DATABASE_URL` (local: `docker compose up -d --wait`). Use a throwaway database.
-- `JWT_SECRET` set. Locally load `.env` with `set -a; . ./.env; set +a`, never printing it.
-- If `http://localhost:8000/ui/login` already answers, reuse that running server and its seed. Do not seed or start a second one when both `web` and `api` are affected.
-- Otherwise `uv sync`, `uv run python -m app.seed` (and `--admin-email qa-admin@example.com` for the admin persona), then start `uv run uvicorn app.main:app --port 8000` in the background and poll `http://localhost:8000/ui/login` until it answers.
+- Postgres reachable via `DATABASE_URL` (local: `docker compose up -d --wait`). `uv sync` done.
+- `JWT_SECRET` and `SEED_PASSWORD` set. Locally load `.env` first (`set -a; . ./.env; set +a`, never printing it). `scripts/qa-server.sh` then switches `DATABASE_URL` to the throwaway `<db>_qa` database itself, so the order cannot leave development data selected.
+- Run `.factory/skills/qa/scripts/qa-server.sh verify`. It passes only for the server this script started, from this checkout (same commit and diff), with this run's nonce in its `x-qa-nonce` response header and in the QA database's comment. If it passes, reuse that server. In CI it was started before you, without credentials.
+- If it fails, do not reuse whatever answers on port 8000. Start a fresh one: run `.factory/skills/qa/scripts/qa-server.sh start` with the Execute tool's `fireAndForget: true` (it recreates and seeds the QA database, including `qa-admin@example.com`, then runs uvicorn in the foreground), and poll `verify` until it passes. Then get the base URL from `qa-server.sh url`. Start at most one server for all affected apps.
 - `droid-control@factory-plugins` active for `web`.
 
 If a pre-flight check fails, report BLOCKED with the error and remediation, then continue with other affected apps.
 
 ## Step 5: Execute Diff-Relevant Flows Only
 
-For each affected app read `.factory/skills/qa-<app>/SKILL.md`. Its flows are a menu, not a checklist.
+For each affected app read the sub-skill named by `apps.<app>.skill` in `config.yaml` (`.factory/skills/<skill>/SKILL.md`). Its flows are a menu, not a checklist.
 
 1. Pick flows relevant to the diff plus adjacent integration flows.
 2. Skip unrelated flows.
