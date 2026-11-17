@@ -48,6 +48,16 @@ def csrf_from_html(html: str) -> str:
     return match.group(1)
 
 
+def transfer_form(ids, token, key="form-1", amount="12.34", to="bob@example.com"):
+    return {
+        "from_account_id": str(ids["alice"]["Checking"]),
+        "to_email": to,
+        "amount": amount,
+        "idempotency_key": key,
+        "csrf_token": token,
+    }
+
+
 def page_login(client: TestClient, user: str, password: str = TEST_PASSWORD):
     """Log in through the HTML form, exactly as a browser would."""
     token = csrf_from_html(client.get("/ui/login").text)

@@ -1,19 +1,10 @@
 import re
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from tests.helpers import balance, count, csrf_from_html, page_login
-
-
-def transfer_form(ids, token, key="form-1", amount="12.34", to=None):
-    return {
-        "from_account_id": str(ids["alice"]["Checking"]),
-        "to_account_id": str(to or ids["bob"]["Checking"]),
-        "amount": amount,
-        "idempotency_key": key,
-        "csrf_token": token,
-    }
+from tests.helpers import balance, count, csrf_from_html, ledger_total, page_login, transfer_form
 
 
 def logged_in_token(client, user="alice"):
@@ -44,7 +35,10 @@ def test_login_accounts_transfer_history_flow(db, client, ids):
     assert sent.status_code == 200
     assert "Sent $12.34" in sent.text
     assert "<html" not in sent.text  # htmx gets a fragment
+    assert 'hx-swap-oob="true"' in sent.text
     assert balance(db, ids["bob"]["Checking"]) == 75_000 + 1_234
+    assert balance(db, ids["bob"]["Savings"]) == 25_000
+    assert ledger_total(db) == 0
 
     history = client.get(f"/ui/history?account_id={ids['alice']['Checking']}")
     assert "-$12.34" in history.text
@@ -52,24 +46,164 @@ def test_login_accounts_transfer_history_flow(db, client, ids):
     assert client.get(f"/ui/history?account_id={ids['bob']['Checking']}").status_code == 404
 
 
+def test_transfer_form_asks_for_recipient_email(client):
+    logged_in_token(client)
+    html = client.get("/ui/transfer").text
+    assert 'for="to_email">To (recipient email)</label>' in html
+    assert '<input id="to_email" name="to_email" type="email"' in html
+    assert "to_account_id" not in html
+
+
+@pytest.mark.parametrize("email", ["bob@example.com", " \tBOB@EXAMPLE.COM \r\n"])
+def test_page_transfer_by_email_uses_checking(db, client, ids, email):
+    token = logged_in_token(client)
+    entries_before = count(db, "ledger_entries")
+    response = client.post("/ui/transfer", data=transfer_form(ids, token, to=email))
+
+    assert response.status_code == 200
+    assert "<html" in response.text
+    assert "Sent $12.34" in response.text
+    assert balance(db, ids["alice"]["Checking"]) == 100_000 - 1_234
+    assert balance(db, ids["bob"]["Checking"]) == 75_000 + 1_234
+    assert balance(db, ids["bob"]["Savings"]) == 25_000
+    assert count(db, "ledger_entries") == entries_before + 2
+    assert ledger_total(db) == 0
+
+
+@pytest.mark.parametrize("htmx", [False, True])
+def test_recipient_errors_are_generic(db, client, ids, htmx):
+    token = logged_in_token(client)
+    # Bob still has accounts, but none named Checking. Admin has no accounts.
+    db.execute("UPDATE accounts SET name = 'Everyday' WHERE id = %s", (ids["bob"]["Checking"],))
+    entries_before = count(db, "ledger_entries")
+    transfers_before = count(db, "transfers")
+    headers = {"HX-Request": "true"} if htmx else {}
+    responses = [
+        client.post("/ui/transfer", data=transfer_form(ids, token, to=email), headers=headers)
+        for email in (
+            "unknown@example.com",
+            "another-unknown@example.org",
+            "bob@example.com",
+            "admin@example.com",
+            "system@example.com",
+            "system-funding@example.com",
+            str(ids["system"]),
+            "",
+            " ",
+            "bob",
+            "bob@",
+            "@example.com",
+            "bob@@example.com",
+            "bob @example.com",
+        )
+    ]
+    for response in responses:
+        assert response.status_code == 422
+        assert '<p class="error" role="status">Recipient not found.</p>' in response.text
+        assert ("<html" not in response.text) == htmx
+        assert response.text == responses[0].text
+    assert count(db, "ledger_entries") == entries_before
+    assert count(db, "transfers") == transfers_before
+    assert balance(db, ids["system"]) == -250_000
+    assert ledger_total(db) == 0
+
+
+def test_duplicate_checking_accounts_are_rejected(db, client, ids):
+    token = logged_in_token(client)
+    db.execute(
+        "INSERT INTO accounts (user_id, name) SELECT user_id, name FROM accounts WHERE id = %s",
+        (ids["bob"]["Checking"],),
+    )
+    entries_before = count(db, "ledger_entries")
+    response = client.post("/ui/transfer", data=transfer_form(ids, token))
+    assert response.status_code == 422
+    assert "Recipient not found." in response.text
+    assert count(db, "ledger_entries") == entries_before
+
+
+@pytest.mark.parametrize("source", ["Checking", "Savings"])
+def test_sending_to_own_email_is_rejected(db, client, ids, source):
+    token = logged_in_token(client)
+    entries_before = count(db, "ledger_entries")
+    data = transfer_form(ids, token, to=" ALICE@EXAMPLE.COM ")
+    data["from_account_id"] = str(ids["alice"][source])
+    response = client.post("/ui/transfer", data=data)
+    assert response.status_code == 422
+    assert "Cannot send to yourself." in response.text
+    assert count(db, "ledger_entries") == entries_before
+    assert ledger_total(db) == 0
+
+
+def test_numeric_destination_cannot_bypass_email_lookup(db, client, ids):
+    token = logged_in_token(client)
+    entries_before = count(db, "ledger_entries")
+    data = transfer_form(ids, token)
+    del data["to_email"]
+    data["to_account_id"] = str(ids["bob"]["Checking"])
+    response = client.post("/ui/transfer", data=data)
+    assert response.status_code == 422
+    assert "Recipient not found." in response.text
+    assert count(db, "ledger_entries") == entries_before
+
+
+def test_recipient_checking_currency_must_match_source(db, client, ids):
+    token = logged_in_token(client)
+    db.execute("UPDATE accounts SET currency = 'EUR' WHERE id = %s", (ids["bob"]["Checking"],))
+    entries_before = count(db, "ledger_entries")
+    response = client.post("/ui/transfer", data=transfer_form(ids, token))
+    assert response.status_code == 422
+    assert "Currency mismatch." in response.text
+    assert count(db, "ledger_entries") == entries_before
+
+
 def test_form_resubmission_with_same_key_moves_money_once(db, client, ids):
     token = logged_in_token(client)
     start = balance(db, ids["alice"]["Checking"])
 
     first = client.post("/ui/transfer", data=transfer_form(ids, token, key="dup"))
-    second = client.post("/ui/transfer", data=transfer_form(ids, token, key="dup"))
+    second = client.post(
+        "/ui/transfer", data=transfer_form(ids, token, key="dup", to=" BOB@EXAMPLE.COM ")
+    )
 
     assert first.status_code == second.status_code == 200
     assert "already processed" in second.text
     assert balance(db, ids["alice"]["Checking"]) == start - 1_234
+    assert ledger_total(db) == 0
+
+
+def test_form_replay_after_draining_balance_moves_money_once(db, client, ids):
+    token = logged_in_token(client)
+    data = transfer_form(ids, token, amount="1000.00")
+    assert client.post("/ui/transfer", data=data).status_code == 200
+    entries_before = count(db, "ledger_entries")
+    response = client.post("/ui/transfer", data=data)
+    assert response.status_code == 200
+    assert "already processed" in response.text
+    assert balance(db, ids["alice"]["Checking"]) == 0
+    assert count(db, "ledger_entries") == entries_before
+    assert ledger_total(db) == 0
+
+
+def test_form_key_conflict_does_not_move_money(db, client, ids):
+    token = logged_in_token(client)
+    assert client.post("/ui/transfer", data=transfer_form(ids, token)).status_code == 200
+    entries_before = count(db, "ledger_entries")
+    response = client.post("/ui/transfer", data=transfer_form(ids, token, amount="1.00"))
+    assert response.status_code == 422
+    assert "already used with a different request" in response.text
+    assert count(db, "ledger_entries") == entries_before
+    assert ledger_total(db) == 0
 
 
 def test_page_overdraft_shows_an_error(db, client, ids):
     token = logged_in_token(client)
+    entries_before = count(db, "ledger_entries")
     response = client.post("/ui/transfer", data=transfer_form(ids, token, amount="1000.01"))
     assert response.status_code == 422
     assert "Insufficient funds" in response.text
     assert balance(db, ids["alice"]["Checking"]) == 100_000
+    assert count(db, "ledger_entries") == entries_before
+    assert ledger_total(db) == 0
 
 
 def test_page_rejects_bad_amounts(client, ids):

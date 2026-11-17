@@ -20,8 +20,8 @@
     <option value="{{ account.id }}">{{ account.id }} · {{ account.name }}</option>
     {% endfor %}
   </select>
-  <label for="to_account_id">To (account id)</label>
-  <input id="to_account_id" name="to_account_id" inputmode="numeric" pattern="[0-9]+" required>
+  <label for="to_email">To (recipient email)</label>
+  <input id="to_email" name="to_email" type="email" autocomplete="email" required>
   <label for="amount">Amount (USD)</label>
   <input id="amount" name="amount" inputmode="decimal" placeholder="10.00" required>
   <p><button type="submit">Send</button></p>

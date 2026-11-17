@@ -1,4 +1,5 @@
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -41,6 +42,35 @@ class TransferResult:
 def _request_hash(from_account_id: int, to_account_id: int, amount_cents: int) -> str:
     payload = f"{from_account_id}|{to_account_id}|{amount_cents}"
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def resolve_recipient_account(pool: ConnectionPool, *, user_id: int, email: str) -> int:
+    """Resolve an email to exactly one non-system Checking account.
+
+    Missing users, missing Checking accounts and ambiguous matches deliberately
+    produce the same error. Money movement still goes through execute_transfer.
+    """
+    email = email.strip().lower()
+    if not re.fullmatch(
+        r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+        r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+        r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*",
+        email,
+    ):
+        raise InvalidTransfer("recipient not found")
+
+    with pool.connection() as conn:
+        accounts = conn.execute(
+            "SELECT a.id, a.user_id FROM accounts a JOIN users u ON u.id = a.user_id "
+            "WHERE u.email = %s AND a.name = 'Checking' AND NOT a.is_system LIMIT 2",
+            (email,),
+        ).fetchall()
+
+    if len(accounts) != 1:
+        raise InvalidTransfer("recipient not found")
+    if accounts[0]["user_id"] == user_id:
+        raise InvalidTransfer("cannot send to yourself")
+    return accounts[0]["id"]
 
 
 def execute_transfer(
