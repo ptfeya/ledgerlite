@@ -121,13 +121,23 @@ jobs:
       # a sha256-checked Chrome for Testing build, and droid-control at a fixed commit. All pins
       # live in qa-tools.sh. A failed install does not fail the job; the preflight reports it as
       # BLOCKED. This script comes from the base branch (the instruction copy above).
+      # Until the tooling script exists on the base branch (as with the first PR that adds it),
+      # skip the install; the preflight step then reports web QA as BLOCKED.
       - name: Install QA browser tooling
+        id: tools
         if: steps.skills.outputs.present == 'true'
         run: |
+          T=.factory/skills/qa/scripts/qa-tools.sh
+          if [ ! -f "base/$T" ] || [ ! -f "$T" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::QA browser tooling is not on the base branch yet; skipping install"
+            exit 0
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
           # Ubuntu 24.04 blocks unprivileged user namespaces, which Chrome's sandbox needs.
           # Re-enable them instead of running Chrome with --no-sandbox.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          .factory/skills/qa/scripts/qa-tools.sh install
+          "$T" install
           echo "$HOME/qa-tools/ab/node_modules/.bin" >> "$GITHUB_PATH"
           echo "AGENT_BROWSER_EXECUTABLE_PATH=$HOME/qa-tools/chrome/chrome-linux64/chrome" >> "$GITHUB_ENV"
       # The PR's application code runs here, as a different OS user with a scrubbed
@@ -161,7 +171,14 @@ jobs:
         env:
           QA_NEED_FFMPEG: ${{ steps.cfg.outputs.video == 'true' || steps.cfg.outputs.compose == 'true' }}
           QA_NEED_IMAGEMAGICK: ${{ steps.cfg.outputs.imagemagick }}
-        run: .factory/skills/qa/scripts/qa-tools.sh preflight
+        run: |
+          if [ "${{ steps.tools.outputs.present }}" = "true" ]; then
+            .factory/skills/qa/scripts/qa-tools.sh preflight
+          else
+            mkdir -p qa-results
+            printf 'QA_PREFLIGHT: BLOCKED\nScope: all web (browser) flows. API flows (curl) are not affected.\nBLOCKED tooling: tooling not yet on base branch\n' > qa-results/preflight.txt
+            cat qa-results/preflight.txt
+          fi
       - name: Run QA
         if: steps.skills.outputs.present == 'true'
         continue-on-error: true
