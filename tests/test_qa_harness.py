@@ -59,8 +59,9 @@ def test_refuses_inherited_libpq_overrides(name, value, monkeypatch):
     monkeypatch.setenv(name, value)
     with pytest.raises(h.HarnessError, match="refusing"):
         h.resolve_target("postgresql:///ledgerlite")
-    with pytest.raises(h.HarnessError, match="refusing"):
-        h.resolve_target("postgresql://u:p@localhost/ledgerlite")
+    if name != "PGHOST":  # an explicit URL host takes precedence over PGHOST in libpq
+        with pytest.raises(h.HarnessError, match="refusing"):
+            h.resolve_target("postgresql://u:p@localhost/ledgerlite")
 
 
 def test_refuses_unsafe_identifiers():
@@ -88,12 +89,12 @@ def test_ensure_user_is_deterministic_and_idempotent(db, ids):
         again = h.ensure_user(conn, "carol@example.com", TEST_PASSWORD, [("Main", 5_000)])
         assert first == again
         account_id = first["accounts"]["Main"]["account_id"]
-        assert h.balance_of(conn, account_id) == 5_000
+        assert h.account_balance(conn, account_id) == 5_000
 
         h.ensure_user(conn, "carol@example.com", TEST_PASSWORD, [("Main", 1_200)])
-        assert h.balance_of(conn, account_id) == 1_200
+        assert h.account_balance(conn, account_id) == 1_200
         h.ensure_user(conn, "carol@example.com", TEST_PASSWORD, [("Main", 9_000)])
-        assert h.balance_of(conn, account_id) == 9_000
+        assert h.account_balance(conn, account_id) == 9_000
 
     assert ledger_total(db) == 0
     assert db.execute("SELECT COUNT(*) AS n FROM accounts WHERE name = 'Main'").fetchone()["n"] == 1
