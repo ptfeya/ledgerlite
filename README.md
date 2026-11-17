@@ -120,9 +120,20 @@ Account ids in the seeded data are `1` (system funding), `2`/`3` (Alice Checking
 Server-rendered pages under `/ui`: `/ui/login`, `/ui/accounts`, `/ui/transfer`, `/ui/history`.
 The transfer form uses htmx and a per-form idempotency key, so a double submit moves money once.
 Enter the recipient's email, not an account ID. Email matching ignores case and surrounding
-whitespace and resolves to the recipient's Checking account. Missing or multiple Checking
-accounts show the same generic error as an unknown email. Sending to yourself is rejected,
-and the Checking account's currency must match the source. The JSON API still uses account IDs.
+whitespace and resolves to the recipient's Checking account. All business-rule failures
+(including unknown or ambiguous recipients, overdrafts, self-transfers, currency mismatches
+and idempotency conflicts) return the same neutral 422 response. Form-validation errors
+remain specific. The JSON API still uses account IDs and keeps its existing errors.
+
+`POST /ui/transfer` allows 20 CSRF-valid submissions per user in a 60-second fixed window,
+including successful transfers, failed transfers and replays. Further submissions return
+429 with a `Retry-After` header and the usual full-page or htmx error markup, without
+looking up the recipient or moving money. The counter is stored in Postgres and shared
+across sessions, workers and restarts. Apply the updated schema (`uv run python -m app.seed`)
+before running the updated app against an existing database.
+
+Successful transfers inherently confirm that a recipient can receive money. The neutral
+errors and rate limit reduce probing; they do not make email-based transfers anonymous.
 
 Pages sign in with an `HttpOnly`, `SameSite=Strict` cookie (`Secure` everywhere except localhost).
 Every form POST, including login and logout, requires a CSRF token. The JSON API ignores the cookie and accepts only the bearer header.

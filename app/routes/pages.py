@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from psycopg import InterfaceError, OperationalError
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from app import ledger
+from app import ledger, rate_limit
 from app.auth import AuthenticationUnavailable, CurrentUser, authenticate, get_page_user, get_pool
 from app.config import get_settings
 from app.security import (
@@ -193,6 +193,11 @@ def transfer_submit(
 ) -> Response:
     require_csrf(user, csrf_token)
 
+    try:
+        retry_after = rate_limit.transfer_retry_after(pool, user.id)
+    except (OperationalError, InterfaceError, PoolTimeout):
+        raise HTTPException(503, "Service temporarily unavailable") from None
+
     status_code = 200
     ok = False
     message = ""
@@ -200,7 +205,9 @@ def transfer_submit(
     cents = parse_amount_cents(amount)
     key = idempotency_key.strip()
 
-    if source_id is None:
+    if retry_after:
+        status_code, message = 429, "Too many transfer attempts. Please try again shortly."
+    elif source_id is None:
         status_code, message = 422, "Choose a valid source account."
     elif cents is None:
         status_code, message = 422, "Enter a positive amount with at most two decimals."
@@ -222,22 +229,29 @@ def transfer_submit(
             message = f"Sent {format_money(result.amount_cents)}{note}."
             # A fresh key for the next transfer; reusing it would just replay this one.
             key = str(uuid4())
-        except ledger.TransferError as exc:
-            status_code, message = exc.status_code, str(exc).capitalize() + "."
+        except ledger.TransferError:
+            # Status, text and markup must not disclose recipient existence,
+            # including via overdrafts, currency mismatches or key conflicts.
+            status_code = 422
+            message = "We couldn't complete this transfer. Check the recipient and your balance."
         except (OperationalError, InterfaceError, PoolTimeout):
             raise HTTPException(503, "Service temporarily unavailable") from None
 
     context = {"ok": ok, "message": message, "idempotency_key": key}
     if request.headers.get("HX-Request"):
-        return render(request, "_transfer_result.html", user, status_code, oob=True, **context)
-    return render(
-        request,
-        "transfer.html",
-        user,
-        status_code,
-        accounts=ledger.list_accounts(pool, user.id),
-        **context,
-    )
+        response = render(request, "_transfer_result.html", user, status_code, oob=True, **context)
+    else:
+        response = render(
+            request,
+            "transfer.html",
+            user,
+            status_code,
+            accounts=ledger.list_accounts(pool, user.id),
+            **context,
+        )
+    if retry_after:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
 
 
 @router.get("/history", response_class=HTMLResponse)

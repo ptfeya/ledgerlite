@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from psycopg import InterfaceError, OperationalError
 from psycopg_pool import PoolTimeout
 
-from app import ledger
+from app import ledger, rate_limit
 from app.main import app
 from tests.helpers import balance, count, csrf_from_html, ledger_total, page_login, transfer_form
 
@@ -13,7 +13,9 @@ from tests.helpers import balance, count, csrf_from_html, ledger_total, page_log
 @pytest.mark.parametrize("htmx", [False, True])
 @pytest.mark.parametrize("error_type", [OperationalError, InterfaceError, PoolTimeout])
 @pytest.mark.parametrize("stage", ["acquire", "query"])
-@pytest.mark.parametrize("operation", ["resolve_recipient_account", "execute_transfer"])
+@pytest.mark.parametrize(
+    "operation", ["transfer_retry_after", "resolve_recipient_account", "execute_transfer"]
+)
 def test_transfer_database_failure_is_safe_and_retryable(
     db, ids, monkeypatch, htmx, error_type, stage, operation
 ):
@@ -29,13 +31,14 @@ def test_transfer_database_failure_is_safe_and_retryable(
             raise error_type(failure_message)
         yield UnavailableConnection()
 
-    original = getattr(ledger, operation)
+    module = rate_limit if operation == "transfer_retry_after" else ledger
+    original = getattr(module, operation)
 
-    def unavailable_operation(pool, **kwargs):
+    def unavailable_operation(pool, *args, **kwargs):
         # Fail inside the real lookup/transfer, after session authentication.
         with monkeypatch.context() as patch:
             patch.setattr(pool, "connection", unavailable_connection)
-            return original(pool, **kwargs)
+            return original(pool, *args, **kwargs)
 
     with TestClient(app, base_url="http://localhost", raise_server_exceptions=False) as client:
         assert page_login(client, "alice").status_code == 303
@@ -48,7 +51,7 @@ def test_transfer_database_failure_is_safe_and_retryable(
         destination_before = balance(db, ids["bob"]["Checking"])
 
         with monkeypatch.context() as patch:
-            patch.setattr(ledger, operation, unavailable_operation)
+            patch.setattr(module, operation, unavailable_operation)
             response = client.post("/ui/transfer", data=data, headers=headers)
 
         assert response.status_code == 503
@@ -67,3 +70,39 @@ def test_transfer_database_failure_is_safe_and_retryable(
         assert balance(db, ids["alice"]["Checking"]) == source_before - 1_234
         assert balance(db, ids["bob"]["Checking"]) == destination_before + 1_234
         assert ledger_total(db) == 0
+
+
+@pytest.mark.parametrize("htmx", [False, True])
+def test_unknown_email_overdraft_and_self_transfer_are_indistinguishable(db, client, ids, htmx):
+    assert page_login(client, "alice").status_code == 303
+    csrf = csrf_from_html(client.get("/ui/transfer").text)
+    headers = {"HX-Request": "true"} if htmx else {}
+    entries_before = count(db, "ledger_entries")
+    transfers_before = count(db, "transfers")
+    source_before = balance(db, ids["alice"]["Checking"])
+    destination_before = balance(db, ids["bob"]["Checking"])
+
+    responses = [
+        client.post(
+            "/ui/transfer",
+            data=transfer_form(ids, csrf, to=email, amount="1000.01"),
+            headers=headers,
+        )
+        for email in ("unknown@example.com", "bob@example.com", "alice@example.com")
+    ]
+
+    for response in responses:
+        assert response.status_code == 422
+        assert (
+            '<p class="error" role="status">We couldn&#39;t complete this transfer. '
+            "Check the recipient and your balance.</p>"
+        ) in response.text
+        assert ("<html" not in response.text) == htmx
+        assert response.content == responses[0].content
+        assert response.headers == responses[0].headers
+
+    assert count(db, "ledger_entries") == entries_before
+    assert count(db, "transfers") == transfers_before
+    assert balance(db, ids["alice"]["Checking"]) == source_before
+    assert balance(db, ids["bob"]["Checking"]) == destination_before
+    assert ledger_total(db) == 0

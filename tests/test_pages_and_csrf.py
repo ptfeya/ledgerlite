@@ -99,7 +99,10 @@ def test_recipient_errors_are_generic(db, client, ids, htmx):
     ]
     for response in responses:
         assert response.status_code == 422
-        assert '<p class="error" role="status">Recipient not found.</p>' in response.text
+        assert (
+            '<p class="error" role="status">We couldn&#39;t complete this transfer. '
+            "Check the recipient and your balance.</p>"
+        ) in response.text
         assert ("<html" not in response.text) == htmx
         assert response.text == responses[0].text
     assert count(db, "ledger_entries") == entries_before
@@ -117,7 +120,7 @@ def test_duplicate_checking_accounts_are_rejected(db, client, ids):
     entries_before = count(db, "ledger_entries")
     response = client.post("/ui/transfer", data=transfer_form(ids, token))
     assert response.status_code == 422
-    assert "Recipient not found." in response.text
+    assert "Check the recipient and your balance." in response.text
     assert count(db, "ledger_entries") == entries_before
 
 
@@ -129,7 +132,7 @@ def test_sending_to_own_email_is_rejected(db, client, ids, source):
     data["from_account_id"] = str(ids["alice"][source])
     response = client.post("/ui/transfer", data=data)
     assert response.status_code == 422
-    assert "Cannot send to yourself." in response.text
+    assert "Check the recipient and your balance." in response.text
     assert count(db, "ledger_entries") == entries_before
     assert ledger_total(db) == 0
 
@@ -142,7 +145,7 @@ def test_numeric_destination_cannot_bypass_email_lookup(db, client, ids):
     data["to_account_id"] = str(ids["bob"]["Checking"])
     response = client.post("/ui/transfer", data=data)
     assert response.status_code == 422
-    assert "Recipient not found." in response.text
+    assert "Check the recipient and your balance." in response.text
     assert count(db, "ledger_entries") == entries_before
 
 
@@ -152,7 +155,7 @@ def test_recipient_checking_currency_must_match_source(db, client, ids):
     entries_before = count(db, "ledger_entries")
     response = client.post("/ui/transfer", data=transfer_form(ids, token))
     assert response.status_code == 422
-    assert "Currency mismatch." in response.text
+    assert "Check the recipient and your balance." in response.text
     assert count(db, "ledger_entries") == entries_before
 
 
@@ -190,7 +193,7 @@ def test_form_key_conflict_does_not_move_money(db, client, ids):
     entries_before = count(db, "ledger_entries")
     response = client.post("/ui/transfer", data=transfer_form(ids, token, amount="1.00"))
     assert response.status_code == 422
-    assert "already used with a different request" in response.text
+    assert "Check the recipient and your balance." in response.text
     assert count(db, "ledger_entries") == entries_before
     assert ledger_total(db) == 0
 
@@ -200,7 +203,7 @@ def test_page_overdraft_shows_an_error(db, client, ids):
     entries_before = count(db, "ledger_entries")
     response = client.post("/ui/transfer", data=transfer_form(ids, token, amount="1000.01"))
     assert response.status_code == 422
-    assert "Insufficient funds" in response.text
+    assert "Check the recipient and your balance." in response.text
     assert balance(db, ids["alice"]["Checking"]) == 100_000
     assert count(db, "ledger_entries") == entries_before
     assert ledger_total(db) == 0
