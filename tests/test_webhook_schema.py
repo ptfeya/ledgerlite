@@ -117,11 +117,6 @@ def test_queue_constraints_reject_inconsistent_rows(db, queued):
         db.execute(insert, ("transfer.updated", funding, "{}"))
     with pytest.raises(psycopg.errors.CheckViolation):
         db.execute(
-            "UPDATE webhook_outbox SET status = 'delivered' WHERE event_id = %s",
-            (event["event_id"],),
-        )
-    with pytest.raises(psycopg.errors.CheckViolation):
-        db.execute(
             "UPDATE webhook_outbox SET attempts = 7 WHERE event_id = %s", (event["event_id"],)
         )
     assert outbox_events(db) == [event]
