@@ -44,6 +44,23 @@ Seeded users (password is `SEED_PASSWORD` from `.env`, default `ledgerlite-dev`;
 
 Opening balances are funded from a system account that no user owns, so the ledger sums to zero from the start.
 
+### Webhook worker
+
+With `WEBHOOK_URL` and `WEBHOOK_SIGNING_SECRET` set, transfers queue `transfer.completed`
+events. A separate process delivers them (the API never sends webhooks itself):
+
+```sh
+uv run python -m app.webhook_worker          # poll until SIGTERM / Ctrl-C
+uv run python -m app.webhook_worker --once   # one attempt per currently due event, then exit
+```
+
+Each POST carries the stored JSON body, `Idempotency-Key: <event_id>` and
+`X-LedgerLite-Signature: t=<unix-seconds>,v1=<hex HMAC-SHA256 of "<t>." + body>`.
+2xx is success; network errors, 429 and 5xx are retried with full-jitter backoff
+(up to six recorded attempts); other responses, including redirects, are terminal and
+move the event to `webhook_dead_letter`. The worker reads its configuration at startup;
+restart it after changing either setting, which then also applies to queued events.
+With `WEBHOOK_URL` empty it exits without sending or changing anything.
 ### Create an admin
 
 All users, including Alice, Bob, and users in an existing database, default to non-admin.

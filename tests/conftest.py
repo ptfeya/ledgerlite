@@ -23,6 +23,7 @@ from tests.helpers import (  # noqa: E402
     TEST_WEBHOOK_URL,
     api_login,
 )
+from tests.webhook_receiver import Receiver  # noqa: E402
 
 # Tests run against a throwaway "<db>_test" database on the same server, never
 # against the development database.
@@ -98,6 +99,15 @@ def webhook_config(monkeypatch):
 
     yield configure
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def receiver():
+    """A real HTTP receiver on 127.0.0.1:8101, stopped even when the test fails."""
+    server = Receiver()
+    server.start()
+    yield server
+    server.stop()
 
 
 @pytest.fixture
