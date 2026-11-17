@@ -57,17 +57,14 @@ step_chrome() {
 step_droid_control() {
   set -e
   command -v droid >/dev/null
-  droid plugin marketplace add "$PLUGINS_REPO"
-  local loc="$HOME/.factory/plugins/marketplaces/factory-plugins"
-  # The marketplace is cloned at the moving default branch with no usable remote, so fetch the
-  # pinned commit explicitly and check it out before installing.
-  git -C "$loc" fetch -q --depth 1 "$PLUGINS_REPO" "$PLUGINS_SHA"
-  git -C "$loc" checkout -q --detach FETCH_HEAD
+  # A 40-character SHA suffix pins the marketplace checkout; it registers as
+  # factory-plugins@<first 8 of the SHA>. Keep PLUGINS_SHA equal to the sha in .factory/settings.json.
+  droid plugin marketplace add "$PLUGINS_REPO@$PLUGINS_SHA"
+  local loc="$HOME/.factory/plugins/marketplaces/factory-plugins@${PLUGINS_SHA:0:8}"
   [ "$(git -C "$loc" rev-parse HEAD)" = "$PLUGINS_SHA" ]
-  droid plugin install droid-control@factory-plugins
-  # Keep the pinned commit from being replaced by a newer one when the agent starts.
+  droid plugin install "droid-control@factory-plugins@${PLUGINS_SHA:0:8}"
   local f
-  for f in "$HOME"/.factory/plugins/known_marketplaces/factory-plugins-*.json; do
+  for f in "$HOME"/.factory/plugins/known_marketplaces/factory-plugins-"${PLUGINS_SHA:0:8}"-*.json; do
     jq '.entry.autoUpdate = false' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   done
 }
@@ -128,6 +125,11 @@ preflight() {
   else
     ok+=("droid-control $DROID_CONTROL_VERSION @ ${PLUGINS_SHA:0:12}")
   fi
+
+  local spin
+  spin=$(jq -r '.extraKnownMarketplaces["factory-plugins"].source.sha // empty' .factory/settings.json 2>/dev/null)
+  [ "$spin" = "$PLUGINS_SHA" ] \
+    || block droid-control ".factory/settings.json marketplace sha (${spin:-unset}) does not match the pinned $PLUGINS_SHA"
 
   # Optional media tools, only when the config asks for them.
   if [ "${QA_NEED_FFMPEG:-false}" = true ]; then
