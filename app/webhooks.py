@@ -200,12 +200,18 @@ def post_webhook(
     """
     parts = urlsplit(url)
     target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    # An explicit port: http.client would read a bare IPv6 host such as "::1" as host:port.
     if parts.scheme == "https":
         conn = http.client.HTTPSConnection(
-            parts.hostname, parts.port, timeout=timeouts.connect, context=_tls_context()
+            parts.hostname,
+            parts.port or http.client.HTTPS_PORT,
+            timeout=timeouts.connect,
+            context=_tls_context(),
         )
     else:
-        conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=timeouts.connect)
+        conn = http.client.HTTPConnection(
+            parts.hostname, parts.port or http.client.HTTP_PORT, timeout=timeouts.connect
+        )
 
     expired = threading.Event()
 
@@ -222,6 +228,10 @@ def post_webhook(
     deadline.start()
     try:
         conn.connect()
+        # Before the socket existed, expire() had nothing to shut down (DNS has no
+        # timeout of its own), so a deadline passed during connect stops here.
+        if expired.is_set():
+            return SendResult(error="timeout")
         conn.sock.settimeout(timeouts.read)
         conn.request("POST", target, body=body, headers=headers)
         response = conn.getresponse()

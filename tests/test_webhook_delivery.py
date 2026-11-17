@@ -415,6 +415,49 @@ def test_trickling_response_is_cut_off_by_total_deadline(db, queue, receiver, wo
     assert (result.outcome, result.error) == ("retry", "timeout")
 
 
+def test_deadline_expiring_before_connection_sends_nothing(receiver, monkeypatch):
+    original = http.client.HTTPConnection.connect
+
+    def slow_connect(self):
+        time.sleep(0.3)  # like a slow DNS lookup, which has no timeout of its own
+        return original(self)
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", slow_connect)
+    started = time.monotonic()
+
+    result = webhooks.post_webhook(
+        receiver.url(), b"{}", {}, webhooks.Timeouts(connect=1.0, read=5.0, total=0.1)
+    )
+
+    assert result == webhooks.SendResult(error="timeout")
+    assert time.monotonic() - started < 1.0
+    assert receiver.requests == []
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://[::1]/hooks", ("::1", 80)),
+        ("https://[::1]/hooks", ("::1", 443)),
+        ("https://[::1]:8443/hooks", ("::1", 8443)),
+        ("http://receiver.invalid/hooks", ("receiver.invalid", 80)),
+    ],
+)
+def test_ipv6_hosts_and_default_ports_reach_the_right_address(monkeypatch, url, expected):
+    seen = []
+
+    def refuse(self):
+        seen.append((self.host, self.port))
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", refuse)
+
+    result = webhooks.post_webhook(url, b"{}", {}, FAST)
+
+    assert seen == [expected]
+    assert result.error == "connection_refused"
+
+
 def test_large_response_body_is_not_read(db, queue, receiver, worker_conn):
     queue()
 
