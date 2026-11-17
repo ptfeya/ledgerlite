@@ -70,12 +70,14 @@ jobs:
         id: skills
         run: |
           if [ -f base/.factory/skills/qa/SKILL.md ]; then
-            # Instructions are any .factory directory, AGENTS.md or CLAUDE.md, at any depth
-            # (nested ones such as app/AGENTS.md also apply to the agent).
+            # Everything droid exec loads as instructions or config, at any depth, in any
+            # letter case: .factory/, .agents/ and .agent/ directories, and AGENTS.md,
+            # CLAUDE.md and DESIGN.md files (nested ones such as app/AGENTS.md also apply).
+            INSTR=( \( \( -type d \( -iname .factory -o -iname .agents -o -iname .agent \) \)
+              -o \( -type f \( -iname agents.md -o -iname claude.md -o -iname design.md \) \) \) )
             find . \( -path ./base -o -path ./.git -o -path ./.venv \) -prune -o \
-              \( \( -name .factory -type d \) -o -name AGENTS.md -o -name CLAUDE.md \) -print0 | xargs -0 -r rm -rf
-            (cd base && find . -path ./.git -prune -o \
-              \( \( -name .factory -type d \) -o -name AGENTS.md -o -name CLAUDE.md \) -print0 \
+              "${INSTR[@]}" -print0 | xargs -0 -r rm -rf
+            (cd base && find . -path ./.git -prune -o "${INSTR[@]}" -print0 \
               | xargs -0 -r cp -R --parents -t ..)
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
