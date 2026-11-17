@@ -106,10 +106,7 @@ CREATE TABLE IF NOT EXISTS webhook_outbox (
     -- responses, URLs or secrets.
     last_status_code integer CHECK (last_status_code BETWEEN 100 AND 599),
     last_error       text CHECK (char_length(last_error) <= 100),
-    created_at       timestamptz NOT NULL DEFAULT now(),
-    updated_at       timestamptz NOT NULL DEFAULT now(),
-    delivered_at     timestamptz,
-    CHECK ((status = 'delivered') = (delivered_at IS NOT NULL))
+    created_at       timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS webhook_outbox_transfer_event_uq
     ON webhook_outbox (transfer_id, event_type);

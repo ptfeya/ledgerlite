@@ -13,12 +13,10 @@ transaction failed in --once mode, 2 for invalid configuration.
 
 import argparse
 import logging
-import random
+import math
 import signal
 import sys
 import threading
-from collections.abc import Callable
-from datetime import datetime
 from uuid import UUID
 
 from psycopg_pool import ConnectionPool
@@ -67,17 +65,12 @@ def run(
     once: bool,
     poll_interval: float = DEFAULT_POLL_INTERVAL,
     stop: threading.Event,
-    clock: Callable[[], datetime] = webhooks.utc_now,
-    uniform: Callable[[float, float], float] = random.uniform,
-    wait: Callable[[float], object] | None = None,
-    timeouts: webhooks.Timeouts = webhooks.DEFAULT_TIMEOUTS,
 ) -> int:
-    wait = wait or stop.wait
     url = settings.webhook_url
     secret = settings.webhook_signing_secret.get_secret_value()
     # --once only considers events due at startup, each at most once, so a
     # zero-delay retry or a steady stream of new transfers cannot keep it running.
-    due_at = clock() if once else None
+    due_at = webhooks.utc_now() if once else None
     attempted: list[UUID] = []
 
     while not stop.is_set():
@@ -87,11 +80,8 @@ def run(
                     conn,
                     url=url,
                     secret=secret,
-                    clock=clock,
-                    uniform=uniform,
                     due_at=due_at,
                     exclude=attempted,
-                    timeouts=timeouts,
                 )
         except Exception as exc:
             # Rolled back: the event keeps its previous state. Log only the type,
@@ -99,14 +89,14 @@ def run(
             log.error("delivery transaction failed (%s); event left unchanged", type(exc).__name__)
             if once:
                 return 1
-            wait(poll_interval)
+            stop.wait(poll_interval)
             continue
 
         if result is None:
             if once:
                 return 0
             # The connection is back in the pool before waiting: nothing is held.
-            wait(poll_interval)
+            stop.wait(poll_interval)
             continue
         if once:
             attempted.append(result.event_id)
@@ -122,7 +112,7 @@ def _config_errors(exc: ValidationError) -> str:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Deliver queued LedgerLite webhook events.")
     parser.add_argument(
         "--once", action="store_true", help="attempt each currently due event once, then exit"
@@ -133,9 +123,9 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_POLL_INTERVAL,
         help="seconds to wait when no event is due (default: %(default)s)",
     )
-    args = parser.parse_args(argv)
-    if args.poll_interval <= 0:
-        parser.error("--poll-interval must be positive")
+    args = parser.parse_args()
+    if not 0 < args.poll_interval < math.inf:
+        parser.error("--poll-interval must be a finite positive number")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     try:

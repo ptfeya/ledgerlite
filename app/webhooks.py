@@ -15,7 +15,8 @@ import random
 import socket
 import ssl
 import threading
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cache
@@ -90,23 +91,13 @@ USER_AGENT = "LedgerLite-Webhooks/1"
 MAX_RETRY_DELAY_SECONDS = 300
 BASE_RETRY_DELAY_SECONDS = 5
 
-# Fixed, URL-free classifications: the only error text ever stored or logged.
-# All of them are transport failures and are retried.
-NETWORK_ERRORS = frozenset(
-    {
-        "timeout",
-        "connection_refused",
-        "connection_closed",
-        "connection_error",
-        "dns_error",
-        "tls_error",
-        "tls_certificate_invalid",
-        "invalid_response",
-        "network_error",
-    }
-)
-# A status line outside 100-599: terminal, like any other unexpected response.
+# classify_error's labels are the only error text ever stored or logged (URL-free).
+# Every one of them is a transport failure and is retried, except this one: a status
+# line outside 100-599 is terminal, like any other unexpected response.
 INVALID_STATUS = "invalid_status"
+# Informational (1xx) responses a receiver may send before the final one.
+MAX_INFORMATIONAL_RESPONSES = 10
+_MAX_HEADER_LINE = 65536
 
 CLAIM_DUE_EVENT = (
     "SELECT event_id, event_type, transfer_id, body, attempts, created_at "
@@ -126,7 +117,7 @@ class Timeouts:
     total: float = 15.0
 
 
-DEFAULT_TIMEOUTS = Timeouts()
+TIMEOUTS = Timeouts()
 
 
 @dataclass(frozen=True)
@@ -156,10 +147,10 @@ def signature(secret: str, timestamp: int, body: bytes) -> str:
     return f"t={int(timestamp)},v1={digest}"
 
 
-def retry_delay(attempt: int, uniform: Callable[[float, float], float] = random.uniform) -> float:
+def retry_delay(attempt: int) -> float:
     """Full-jitter backoff after recorded failure ``attempt`` (1-based), in seconds."""
     cap = min(MAX_RETRY_DELAY_SECONDS, BASE_RETRY_DELAY_SECONDS * 2 ** (attempt - 1))
-    return uniform(0, cap)
+    return random.uniform(0, cap)
 
 
 def classify_error(exc: BaseException) -> str:
@@ -190,14 +181,60 @@ def _tls_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-def post_webhook(
-    url: str, body: bytes, headers: dict[str, str], timeouts: Timeouts = DEFAULT_TIMEOUTS
-) -> SendResult:
+class _FinalResponse(http.client.HTTPResponse):
+    """Reads past informational responses (102, 103, ...) to the final status line.
+
+    The stdlib skips only ``100 Continue``; anything else 1xx would be taken for the
+    outcome. ``101 Switching Protocols`` has no final response after it, so it is returned.
+    """
+
+    def _read_status(self):
+        for _ in range(MAX_INFORMATIONAL_RESPONSES):
+            version, status, reason = super()._read_status()
+            if not 100 <= status <= 199 or status == 101:
+                return version, status, reason
+            while (line := self.fp.readline(_MAX_HEADER_LINE + 1)) not in (b"\r\n", b"\n", b""):
+                if len(line) > _MAX_HEADER_LINE:
+                    raise http.client.LineTooLong("header line")
+        raise http.client.HTTPException("too many informational responses")
+
+
+def _create_connection_within(deadline: float, per_attempt: float):
+    """socket.create_connection whose attempts share one overall deadline.
+
+    The stdlib applies its timeout to every resolved address separately, so many
+    unreachable addresses could far exceed the total budget.
+    """
+
+    def connect(address, timeout=None, source_address=None):
+        host, port = address
+        last_error: OSError | None = None
+        for family, kind, proto, _, sockaddr in socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            sock = socket.socket(family, kind, proto)
+            try:
+                sock.settimeout(min(per_attempt, remaining))
+                sock.connect(sockaddr)
+                return sock
+            except OSError as exc:
+                sock.close()
+                last_error = exc
+        raise last_error or OSError("no addresses to connect to")
+
+    return connect
+
+
+def post_webhook(url: str, body: bytes, headers: dict[str, str]) -> SendResult:
     """Send exactly one POST; never follows redirects or retries.
 
     Only the status line and headers are read; the response body is discarded
     unread, so a large or endless response cannot hold the worker.
     """
+    timeouts = TIMEOUTS
     parts = urlsplit(url)
     target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
     # An explicit port: http.client would read a bare IPv6 host such as "::1" as host:port.
@@ -213,6 +250,10 @@ def post_webhook(
             parts.hostname, parts.port or http.client.HTTP_PORT, timeout=timeouts.connect
         )
 
+    conn.response_class = _FinalResponse
+    conn._create_connection = _create_connection_within(
+        time.monotonic() + timeouts.total, timeouts.connect
+    )
     expired = threading.Event()
 
     def expire() -> None:
@@ -251,7 +292,7 @@ def post_webhook(
 def _outcome(result: SendResult, attempt: int) -> str:
     if result.status_code is not None and 200 <= result.status_code <= 299:
         return "delivered"
-    retryable = result.error in NETWORK_ERRORS or (
+    retryable = (result.error is not None and result.error != INVALID_STATUS) or (
         result.status_code is not None
         and (result.status_code == 429 or 500 <= result.status_code <= 599)
     )
@@ -261,14 +302,11 @@ def _outcome(result: SendResult, attempt: int) -> str:
     return "dead_letter"
 
 
-def _mark_delivered(
-    cur: psycopg.Cursor, event_id: UUID, attempt: int, result: SendResult, at: datetime
-) -> None:
+def _mark_delivered(cur: psycopg.Cursor, event_id: UUID, attempt: int, result: SendResult) -> None:
     cur.execute(
         "UPDATE webhook_outbox SET status = 'delivered', attempts = %s, "
-        "last_status_code = %s, last_error = NULL, delivered_at = %s, updated_at = %s "
-        "WHERE event_id = %s",
-        (attempt, result.status_code, at, at, event_id),
+        "last_status_code = %s, last_error = NULL WHERE event_id = %s",
+        (attempt, result.status_code, event_id),
     )
 
 
@@ -277,13 +315,12 @@ def _schedule_retry(
     event_id: UUID,
     attempt: int,
     result: SendResult,
-    at: datetime,
     next_attempt_at: datetime,
 ) -> None:
     cur.execute(
         "UPDATE webhook_outbox SET attempts = %s, next_attempt_at = %s, "
-        "last_status_code = %s, last_error = %s, updated_at = %s WHERE event_id = %s",
-        (attempt, next_attempt_at, result.status_code, result.error, at, event_id),
+        "last_status_code = %s, last_error = %s WHERE event_id = %s",
+        (attempt, next_attempt_at, result.status_code, result.error, event_id),
     )
 
 
@@ -308,11 +345,8 @@ def deliver_next(
     *,
     url: str,
     secret: str,
-    clock: Callable[[], datetime] = utc_now,
-    uniform: Callable[[float, float], float] = random.uniform,
     due_at: datetime | None = None,
     exclude: Sequence[UUID] = (),
-    timeouts: Timeouts = DEFAULT_TIMEOUTS,
 ) -> DeliveryResult | None:
     """Make one delivery attempt for the next due event, or return None.
 
@@ -323,7 +357,7 @@ def deliver_next(
     """
     with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         event = cur.execute(
-            CLAIM_DUE_EVENT, (due_at if due_at is not None else clock(), list(exclude))
+            CLAIM_DUE_EVENT, (due_at if due_at is not None else utc_now(), list(exclude))
         ).fetchone()
         if event is None:
             return None
@@ -334,19 +368,19 @@ def deliver_next(
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
             "Idempotency-Key": str(event_id),
-            SIGNATURE_HEADER: signature(secret, int(clock().timestamp()), body),
+            SIGNATURE_HEADER: signature(secret, int(utc_now().timestamp()), body),
         }
-        result = post_webhook(url, body, headers, timeouts)
+        result = post_webhook(url, body, headers)
 
-        finished = clock()
+        finished = utc_now()
         attempt = min(event["attempts"] + 1, MAX_ATTEMPTS)
         outcome = _outcome(result, attempt)
         next_attempt_at = None
         if outcome == "delivered":
-            _mark_delivered(cur, event_id, attempt, result, finished)
+            _mark_delivered(cur, event_id, attempt, result)
         elif outcome == "retry":
-            next_attempt_at = finished + timedelta(seconds=retry_delay(attempt, uniform))
-            _schedule_retry(cur, event_id, attempt, result, finished, next_attempt_at)
+            next_attempt_at = finished + timedelta(seconds=retry_delay(attempt))
+            _schedule_retry(cur, event_id, attempt, result, next_attempt_at)
         else:
             _move_to_dead_letter(cur, event_id, attempt, result, finished)
 
@@ -394,8 +428,8 @@ def list_dead_letters(pool: ConnectionPool, limit: int = DEAD_LETTER_LIST_MAX) -
 def _requeue(cur: psycopg.Cursor, event: dict, at: datetime) -> dict:
     return cur.execute(
         "INSERT INTO webhook_outbox (event_id, event_type, transfer_id, body, status, "
-        "attempts, next_attempt_at, created_at, updated_at) "
-        "VALUES (%s, %s, %s, %s, 'pending', 0, %s, %s, %s) "
+        "attempts, next_attempt_at, created_at) "
+        "VALUES (%s, %s, %s, %s, 'pending', 0, %s, %s) "
         "RETURNING event_id, transfer_id, status, attempts, next_attempt_at",
         (
             event["event_id"],
@@ -404,14 +438,11 @@ def _requeue(cur: psycopg.Cursor, event: dict, at: datetime) -> dict:
             event["body"],
             at,
             event["created_at"],
-            at,
         ),
     ).fetchone()
 
 
-def replay_dead_letter(
-    pool: ConnectionPool, event_id: UUID, *, clock: Callable[[], datetime] = utc_now
-) -> dict:
+def replay_dead_letter(pool: ConnectionPool, event_id: UUID) -> dict:
     """Move one dead-letter event back to the outbox, due now, with a fresh
     attempt budget and its original id, body and timestamps.
 
@@ -432,6 +463,6 @@ def replay_dead_letter(
             ).fetchone()
             if event is None:
                 raise ReplayNotFound
-            return _requeue(cur, event, clock())
+            return _requeue(cur, event, utc_now())
     except psycopg.errors.UniqueViolation:
         raise ReplayConflict from None

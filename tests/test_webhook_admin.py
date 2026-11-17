@@ -197,8 +197,8 @@ def test_list_returns_only_dead_events_with_safe_metadata(db, client, admin, eve
     [by_error] = dead(status=None, error="connection_refused", at=failed_at + timedelta(1))
     pending, delivered = events(2)
     db.execute(
-        "UPDATE webhook_outbox SET status = 'delivered', attempts = 1, last_status_code = 200, "
-        "delivered_at = now() WHERE event_id = %s",
+        "UPDATE webhook_outbox SET status = 'delivered', attempts = 1, last_status_code = 200 "
+        "WHERE event_id = %s",
         (delivered["event_id"],),
     )
 
@@ -285,7 +285,6 @@ def test_replay_moves_dead_event_to_one_due_pending_event(db, client, admin, dea
     assert queued["created_at"] == original["created_at"] == dead_row["created_at"]
     assert queued["status"] == "pending"
     assert queued["attempts"] == 0
-    assert queued["delivered_at"] is None
     assert queued["last_status_code"] is None
     assert queued["last_error"] is None
     assert started <= queued["next_attempt_at"] <= finished
@@ -300,15 +299,15 @@ def test_replay_moves_dead_event_to_one_due_pending_event(db, client, admin, dea
     assert money_state(db) == money_before
 
 
-def test_replay_grants_a_fresh_six_attempt_cycle(db, client, admin, events, receiver):
+def test_replay_grants_a_fresh_six_attempt_cycle(db, client, admin, events, receiver, monkeypatch):
     [event] = events()
     clock = Clock(datetime.now(UTC) + timedelta(minutes=1))
+    monkeypatch.setattr(webhooks, "utc_now", clock)
+    monkeypatch.setattr(webhooks.random, "uniform", zero)
     with psycopg.connect(TEST_DATABASE_URL, row_factory=dict_row) as conn:
 
         def attempt():
-            return webhooks.deliver_next(
-                conn, url=REFUSED_URL, secret=TEST_WEBHOOK_SECRET, clock=clock, uniform=zero
-            )
+            return webhooks.deliver_next(conn, url=REFUSED_URL, secret=TEST_WEBHOOK_SECRET)
 
         for _ in range(6):
             result = attempt()
@@ -329,9 +328,7 @@ def test_replay_grants_a_fresh_six_attempt_cycle(db, client, admin, events, rece
         # A second replay is another fresh cycle, which can now succeed.
         assert client.post(replay_path(event["event_id"]), headers=admin).status_code == 200
         receiver.responder = lambda request: Reply(200)
-        result = webhooks.deliver_next(
-            conn, url=receiver.url(), secret=TEST_WEBHOOK_SECRET, clock=clock, uniform=zero
-        )
+        result = webhooks.deliver_next(conn, url=receiver.url(), secret=TEST_WEBHOOK_SECRET)
     assert (result.outcome, result.attempt) == ("delivered", 1)
     [request_seen] = receiver.requests
     assert request_seen.body == event["body"].encode()
@@ -344,8 +341,8 @@ def test_replay_of_unknown_pending_or_delivered_event_is_404(db, client, admin, 
     pending, delivered = events(2)
     dead()
     db.execute(
-        "UPDATE webhook_outbox SET status = 'delivered', attempts = 1, last_status_code = 200, "
-        "delivered_at = now() WHERE event_id = %s",
+        "UPDATE webhook_outbox SET status = 'delivered', attempts = 1, last_status_code = 200 "
+        "WHERE event_id = %s",
         (delivered["event_id"],),
     )
     before = (queue_state(db), money_state(db))

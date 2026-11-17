@@ -10,7 +10,6 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 def make_pool(
     database_url: str,
     *,
-    min_size: int = 1,
     max_size: int = 10,
     application_name: str | None = None,
 ) -> ConnectionPool:
@@ -19,7 +18,7 @@ def make_pool(
         kwargs["application_name"] = application_name
     return ConnectionPool(
         database_url,
-        min_size=min_size,
+        min_size=1,
         max_size=max_size,
         kwargs=kwargs,
         open=False,

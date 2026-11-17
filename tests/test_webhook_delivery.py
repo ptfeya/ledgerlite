@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 import psycopg
@@ -100,15 +101,20 @@ def worker_conn():
         yield conn
 
 
-def deliver(conn, url, *, clock=None, uniform=upper, secret=TEST_WEBHOOK_SECRET, **kwargs):
-    return webhooks.deliver_next(
-        conn,
-        url=url,
-        secret=secret,
-        clock=clock or Clock(),
-        uniform=uniform,
-        **kwargs,
-    )
+def deliver(
+    conn, url, *, clock=None, uniform=upper, timeouts=None, secret=TEST_WEBHOOK_SECRET, **kwargs
+):
+    with (
+        patch.object(webhooks, "utc_now", clock or Clock()),
+        patch.object(webhooks.random, "uniform", uniform),
+        patch.object(webhooks, "TIMEOUTS", timeouts or webhooks.TIMEOUTS),
+    ):
+        return webhooks.deliver_next(conn, url=url, secret=secret, **kwargs)
+
+
+def send(url, body=b"{}", headers=None, timeouts=FAST):
+    with patch.object(webhooks, "TIMEOUTS", timeouts):
+        return webhooks.post_webhook(url, body, headers or {})
 
 
 def row(db, event_id) -> dict | None:
@@ -155,7 +161,6 @@ def test_delivery_sends_exact_body_with_signature_and_idempotency_key(
     stored = row(db, event["event_id"])
     assert stored["status"] == "delivered"
     assert stored["attempts"] == 1
-    assert stored["delivered_at"] == clock.now
     assert stored["last_status_code"] == 200
     assert stored["last_error"] is None
     assert stored["body"] == event["body"]
@@ -197,10 +202,13 @@ def test_retry_delay_samples_full_jitter_window(attempt, cap):
         calls.append((low, high))
         return high / 2
 
-    assert webhooks.retry_delay(attempt, uniform=record) == cap / 2
+    with patch.object(webhooks.random, "uniform", record):
+        assert webhooks.retry_delay(attempt) == cap / 2
     assert calls == [(0, cap)]
-    assert webhooks.retry_delay(attempt, uniform=lower) == 0
-    assert webhooks.retry_delay(attempt, uniform=upper) == cap
+    with patch.object(webhooks.random, "uniform", lower):
+        assert webhooks.retry_delay(attempt) == 0
+    with patch.object(webhooks.random, "uniform", upper):
+        assert webhooks.retry_delay(attempt) == cap
     for _ in range(200):
         assert 0 <= webhooks.retry_delay(attempt) <= cap
 
@@ -425,9 +433,7 @@ def test_deadline_expiring_before_connection_sends_nothing(receiver, monkeypatch
     monkeypatch.setattr(http.client.HTTPConnection, "connect", slow_connect)
     started = time.monotonic()
 
-    result = webhooks.post_webhook(
-        receiver.url(), b"{}", {}, webhooks.Timeouts(connect=1.0, read=5.0, total=0.1)
-    )
+    result = send(receiver.url(), timeouts=webhooks.Timeouts(connect=1.0, read=5.0, total=0.1))
 
     assert result == webhooks.SendResult(error="timeout")
     assert time.monotonic() - started < 1.0
@@ -452,7 +458,7 @@ def test_ipv6_hosts_and_default_ports_reach_the_right_address(monkeypatch, url, 
 
     monkeypatch.setattr(http.client.HTTPConnection, "connect", refuse)
 
-    result = webhooks.post_webhook(url, b"{}", {}, FAST)
+    result = send(url)
 
     assert seen == [expected]
     assert result.error == "connection_refused"
@@ -492,7 +498,7 @@ def test_https_uses_verified_tls(monkeypatch):
         return original(self)
 
     monkeypatch.setattr(http.client.HTTPSConnection, "connect", recording_connect)
-    result = webhooks.post_webhook("https://127.0.0.1:9/hooks", b"{}", {}, FAST)
+    result = send("https://127.0.0.1:9/hooks")
 
     [context] = contexts
     assert context.verify_mode == ssl.CERT_REQUIRED
@@ -588,8 +594,7 @@ def test_only_due_pending_rows_are_sent_in_deterministic_order(db, queue, receiv
             "UPDATE webhook_outbox SET next_attempt_at = %s WHERE event_id = %s", (due, event_id)
         )
     db.execute(
-        "UPDATE webhook_outbox SET status = 'delivered', delivered_at = now(), attempts = 1 "
-        "WHERE event_id = %s",
+        "UPDATE webhook_outbox SET status = 'delivered', attempts = 1 WHERE event_id = %s",
         (ids_[4],),
     )
     untouched = [row(db, ids_[3]), row(db, ids_[4])]
@@ -762,12 +767,17 @@ def test_idle_and_backoff_waits_hold_no_connection_or_lock(db, queue, receiver, 
     queue()
     receiver.responder = lambda request: Reply(503)
     settings = get_settings()
-    stop = threading.Event()
     observations = []
     pool = webhook_worker.make_worker_pool(TEST_DATABASE_URL)
     pool.open(wait=True, timeout=10)
 
-    def wait(seconds):
+    class WaitRecorder(threading.Event):
+        def wait(self, seconds=None):
+            return record_wait(seconds)
+
+    stop = WaitRecorder()
+
+    def record_wait(seconds):
         stats = pool.get_stats()
         observations.append(
             {
@@ -787,8 +797,6 @@ def test_idle_and_backoff_waits_hold_no_connection_or_lock(db, queue, receiver, 
             once=False,
             poll_interval=0.25,
             stop=stop,
-            uniform=upper,
-            wait=wait,
         )
     finally:
         pool.close()
@@ -809,9 +817,10 @@ def test_once_attempts_each_due_event_at_most_once(db, queue, receiver, webhook_
     pool.open(wait=True, timeout=10)
     try:
         # Zero jitter makes every retry due immediately; --once still stops.
-        code = webhook_worker.run(
-            pool, get_settings(), once=True, poll_interval=1, stop=threading.Event(), uniform=lower
-        )
+        with patch.object(webhooks.random, "uniform", lower):
+            code = webhook_worker.run(
+                pool, get_settings(), once=True, poll_interval=1, stop=threading.Event()
+            )
     finally:
         pool.close()
 
@@ -829,3 +838,113 @@ def test_api_lifespan_starts_no_delivery(db, queue, receiver, client):
     time.sleep(0.5)
     assert receiver.requests == []
     assert outbox_events(db)[0]["status"] == "pending"
+
+
+# --- regression tests for review findings ------------------------------------------------
+
+
+def raw_http_server(payload: bytes):
+    """A one-shot loopback server that answers any request with fixed raw bytes."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+
+    def serve():
+        conn, _ = server.accept()
+        with conn:
+            conn.settimeout(2)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                data += conn.recv(4096)
+            conn.sendall(payload)
+        server.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return f"http://127.0.0.1:{server.getsockname()[1]}/hooks"
+
+
+@pytest.mark.parametrize(
+    "informational",
+    [
+        b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n",
+        b"HTTP/1.1 102 Processing\r\n\r\n",
+        b"HTTP/1.1 102 Processing\r\n\r\nHTTP/1.1 103 Early Hints\r\n\r\n",
+    ],
+)
+def test_informational_responses_are_read_past_to_the_final_status(informational):
+    url = raw_http_server(informational + b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+    result = send(url)
+
+    assert result == webhooks.SendResult(status_code=200)
+    assert webhooks._outcome(result, 1) == "delivered"
+
+
+def test_informational_response_followed_by_failure_is_classified_by_the_final_status():
+    url = raw_http_server(b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 503 Busy\r\n\r\n")
+
+    assert send(url) == webhooks.SendResult(status_code=503)
+
+
+def test_endless_informational_responses_are_an_invalid_response():
+    url = raw_http_server(b"HTTP/1.1 102 Processing\r\n\r\n" * 50)
+
+    assert send(url) == webhooks.SendResult(error="invalid_response")
+
+
+def test_switching_protocols_is_returned_not_skipped():
+    url = raw_http_server(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")
+
+    assert send(url) == webhooks.SendResult(status_code=101)
+
+
+def test_total_deadline_covers_every_connection_attempt(monkeypatch):
+    addresses = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"192.0.2.{n}", 80)) for n in range(1, 5)
+    ]
+    monkeypatch.setattr(webhooks.socket, "getaddrinfo", lambda *args, **kwargs: addresses)
+
+    class Unreachable:
+        """Every connect attempt uses its whole timeout, like a blackholed address."""
+
+        def __init__(self, *args):
+            self.timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
+
+        def connect(self, address):
+            time.sleep(self.timeout)
+            raise TimeoutError
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(webhooks.socket, "socket", Unreachable)
+    started = time.monotonic()
+
+    result = send("http://receiver.invalid/hooks", timeouts=webhooks.Timeouts(0.2, 5.0, 0.3))
+
+    assert result == webhooks.SendResult(error="timeout")
+    assert time.monotonic() - started < 0.55  # four full 0.2s attempts would take 0.8s
+
+
+def test_every_transport_label_is_retried_except_invalid_status():
+    for label in ("timeout", "dns_error", "tls_error", "a_label_added_later"):
+        assert webhooks._outcome(webhooks.SendResult(error=label), 1) == "retry"
+    assert webhooks._outcome(webhooks.SendResult(error=webhooks.INVALID_STATUS), 1) == (
+        "dead_letter"
+    )
+    assert webhooks._outcome(webhooks.SendResult(error="timeout"), webhooks.MAX_ATTEMPTS) == (
+        "dead_letter"
+    )
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1"])
+def test_worker_rejects_nonfinite_or_nonpositive_poll_intervals(monkeypatch, value):
+    monkeypatch.setattr("sys.argv", ["app.webhook_worker", "--poll-interval", value])
+
+    with pytest.raises(SystemExit) as exit_info:
+        webhook_worker.main()
+
+    assert exit_info.value.code == 2

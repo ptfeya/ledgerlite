@@ -147,3 +147,15 @@ def test_transfer_truncate_cascade_clears_queues(db, queued):
     db.execute("TRUNCATE ledger_entries, transfers, accounts, users RESTART IDENTITY CASCADE")
 
     assert outbox_events(db) == dead_letters(db) == []
+
+
+def test_outbox_delivery_state_has_a_single_stored_authority(db):
+    columns = {
+        r["column_name"]
+        for r in db.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'webhook_outbox'"
+        ).fetchall()
+    }
+
+    assert "status" in columns
+    assert not columns & {"delivered_at", "updated_at"}

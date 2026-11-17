@@ -68,7 +68,7 @@ Tests need the Compose Postgres running. They create and drop a separate `<POSTG
 (`ledgerlite_test` by default) and never touch the development data.
 
 `tests/test_webhook_e2e.py` also runs the real stack: the API on `127.0.0.1:8100` against its own
-`ledgerlite_webhooks_qa` database, worker processes, and a receiver on `127.0.0.1:8101`. Both
+`<POSTGRES_DB>_test_e2e` database (inside the test namespace, never the development database), worker processes, and a receiver on `127.0.0.1:8101`. Both
 ports must be free. Run it alone with `uv run pytest tests/test_webhook_e2e.py`.
 
 Lint and format:

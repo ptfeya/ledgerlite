@@ -88,7 +88,6 @@ def assert_single_event_for(db, transfer_id, amount_cents: int, currency: str = 
 
     assert event["status"] == "pending"
     assert event["attempts"] == 0
-    assert event["delivered_at"] is None
     assert event["last_status_code"] is None
     assert event["last_error"] is None
     assert event["next_attempt_at"] <= datetime.now(UTC)
@@ -420,14 +419,14 @@ def test_replay_never_creates_or_resets_an_event_in_any_state(
     if state == "retry_scheduled":
         db.execute(
             "UPDATE webhook_outbox SET attempts = 3, last_status_code = 503, "
-            "next_attempt_at = now() + interval '1 hour', updated_at = now() "
+            "next_attempt_at = now() + interval '1 hour' "
             "WHERE event_id = %s",
             (event_id,),
         )
     elif state == "delivered":
         db.execute(
             "UPDATE webhook_outbox SET status = 'delivered', attempts = 1, "
-            "last_status_code = 204, delivered_at = now(), updated_at = now() "
+            "last_status_code = 204 "
             "WHERE event_id = %s",
             (event_id,),
         )

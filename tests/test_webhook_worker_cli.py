@@ -131,7 +131,6 @@ def test_polling_worker_delivers_new_events_once_and_stops_on_sigterm(db, queue,
     assert len(receiver.requests) == 1
     stored = outbox_events(db)[0]
     assert (stored["status"], stored["attempts"]) == ("delivered", 1)
-    assert stored["delivered_at"] is not None
 
     proc.send_signal(signal.SIGTERM)
     output, _ = proc.communicate(timeout=10)

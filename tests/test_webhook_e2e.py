@@ -1,7 +1,7 @@
 """Live end-to-end webhook flows through the real entry points.
 
 The API runs under uvicorn on 127.0.0.1:8100 against its own
-ledgerlite_webhooks_qa database, the worker runs as separate
+<POSTGRES_DB>_test_e2e database, the worker runs as separate
 `python -m app.webhook_worker` processes, and deliveries go to the real loopback
 receiver on 127.0.0.1:8101. Child processes get a minimal environment (nothing
 inherited except PATH) and a working directory without a .env file, and every
@@ -32,12 +32,14 @@ from app import webhooks
 from app.db import apply_schema
 from app.seed import seed, seed_admin
 from app.webhook_worker import APPLICATION_NAME
-from tests.conftest import ADMIN_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import ADMIN_DATABASE_URL, TEST_DATABASE_URL, TEST_DBNAME
 from tests.helpers import balance, ledger_total
 from tests.webhook_receiver import Reply
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-QA_DBNAME = "ledgerlite_webhooks_qa"
+# Inside the configured test namespace ("<db>_test"), so the destructive setup below can
+# never reach a development database.
+QA_DBNAME = f"{TEST_DBNAME}_e2e"
 QA_DATABASE_URL = make_conninfo(TEST_DATABASE_URL, dbname=QA_DBNAME)
 API_HOST = "127.0.0.1"
 API_PORT = 8100
@@ -49,6 +51,11 @@ DELIVERED_LOG = re.compile(r"event ([0-9a-f-]{36}) delivered")
 QA_PASSWORD = secrets.token_urlsafe(24)
 QA_JWT_SECRET = secrets.token_hex(32)
 QA_WEBHOOK_SECRET = secrets.token_hex(32)
+
+
+def assert_isolated_dbname(dbname: str) -> None:
+    """Refuse to drop anything outside the test namespace."""
+    assert dbname.endswith("_test_e2e") and dbname != TEST_DBNAME, dbname
 
 
 def readme_verify_signature():
@@ -108,6 +115,7 @@ def qa_database():
     """Recreate only the isolated QA database; dropped again afterwards."""
 
     def recreate(drop_only: bool = False) -> None:
+        assert_isolated_dbname(QA_DBNAME)
         with psycopg.connect(ADMIN_DATABASE_URL, autocommit=True) as admin:
             admin.execute(
                 sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(QA_DBNAME))
@@ -343,7 +351,6 @@ def test_live_transfer_is_delivered_signed_and_its_replay_adds_nothing(
         1,
         200,
     )
-    assert delivered["delivered_at"] is not None
     assert delivered["body"] == event["body"]
 
     # Same key, same request: the original transfer, no money, no new or reset event.
@@ -518,3 +525,11 @@ def test_dead_letter_is_listed_replayed_and_redelivered_without_moving_money(
     assert money(qa_db) == committed
     assert (balance(qa_db, source), balance(qa_db, destination)) == balances
     assert ledger_total(qa_db) == 0
+
+
+def test_live_stack_database_stays_inside_the_test_namespace():
+    assert f"{TEST_DBNAME}_e2e" == QA_DBNAME
+    assert_isolated_dbname(QA_DBNAME)
+    for unsafe in ("ledgerlite", TEST_DBNAME, "ledgerlite_webhooks_qa", "postgres"):
+        with pytest.raises(AssertionError):
+            assert_isolated_dbname(unsafe)
