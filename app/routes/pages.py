@@ -5,7 +5,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from psycopg_pool import ConnectionPool
+from psycopg import InterfaceError, OperationalError
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app import ledger
 from app.auth import AuthenticationUnavailable, CurrentUser, authenticate, get_page_user, get_pool
@@ -223,6 +224,8 @@ def transfer_submit(
             key = str(uuid4())
         except ledger.TransferError as exc:
             status_code, message = exc.status_code, str(exc).capitalize() + "."
+        except (OperationalError, InterfaceError, PoolTimeout):
+            raise HTTPException(503, "Service temporarily unavailable") from None
 
     context = {"ok": ok, "message": message, "idempotency_key": key}
     if request.headers.get("HX-Request"):
