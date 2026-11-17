@@ -119,7 +119,8 @@ jobs:
       # Pinned browser tooling, installed in this trusted step (no secrets in its environment):
       # agent-browser 0.43.0 from a lockfile with integrity hashes (npm ci --ignore-scripts),
       # a sha256-checked Chrome for Testing build, and droid-control at a fixed commit. All pins
-      # live in qa-tools.sh. A failed install does not fail the job; the preflight reports it as
+      # live in qa-tools.sh, tools/package.json and .factory/settings.json. The script also exports
+      # the PATH and browser location for later steps. A failed install does not fail the job; the preflight reports it as
       # BLOCKED. This script comes from the base branch (the instruction copy above).
       # Until the tooling script exists on the base branch (as with the first PR that adds it),
       # skip the install; the preflight step then reports web QA as BLOCKED.
@@ -138,8 +139,6 @@ jobs:
           # Re-enable them instead of running Chrome with --no-sandbox.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           "$T" install
-          echo "$HOME/qa-tools/ab/node_modules/.bin" >> "$GITHUB_PATH"
-          echo "AGENT_BROWSER_EXECUTABLE_PATH=$HOME/qa-tools/chrome/chrome-linux64/chrome" >> "$GITHUB_ENV"
       # The PR's application code runs here, as a different OS user with a scrubbed
       # environment, in a step that has no secrets. It starts before (and outlives) the
       # step that holds FACTORY_API_KEY. That user cannot read the agent's process

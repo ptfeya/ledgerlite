@@ -21,7 +21,7 @@ No preview deployments exist. Test the branch locally:
 2. Follow the orchestrator's Step 4 exactly: check the server with `env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent .factory/skills/qa/scripts/qa-server.sh verify` and reuse it only if it passes. In CI never start a server or execute anything from the checkout. Locally, start one as Step 4 describes, using the Execute tool's `fireAndForget: true` (a shell `&` is killed when the call returns). It uses the throwaway `<db>_qa` database.
 3. Base URL: the output of `env -i ... qa-server.sh url` plus `/ui` (normally `http://localhost:8000/ui`).
 
-In CI, read `qa-results/preflight.txt` before any browser step; if it starts with `QA_PREFLIGHT: BLOCKED`, report all web tests BLOCKED with its reasons (qa skill Step 4).
+In CI, read `qa-results/preflight.txt` before any browser step; if it starts with `QA_PREFLIGHT: BLOCKED`, report all web tests BLOCKED with its reasons; report any `APP_FAIL` line as FAIL (qa skill Step 4).
 
 Never fall back to a remote environment. If the server cannot start, report all web tests BLOCKED.
 
@@ -50,5 +50,5 @@ Repeat transfer and history as alice and bob; each must see only their own accou
 
 1. **htmx partial not swapped yet.** Wait for the result element to change before snapshotting; each snapshot must differ.
 2. **Seed password mismatch.** Login error for seeded users means `SEED_PASSWORD` differs from the value used at seed time.
-3. **Browser tooling missing or broken in CI.** Shows up as `QA_PREFLIGHT: BLOCKED` (for example Chrome cannot launch or a pin failed to install). It is an environment problem, not an app failure. Report BLOCKED; never mark the app FAIL for it.
+3. **Browser tooling missing or broken in CI.** Shows up as `QA_PREFLIGHT: BLOCKED` (for example Chrome cannot launch or a pin failed to install). It is an environment problem. Report BLOCKED. An `APP_FAIL` line is the opposite: the app itself misbehaved, so report FAIL.
 4. **Stale balances.** Assert deltas, not absolute numbers, or restart with `qa-server.sh start`, which recreates the throwaway database (re-seeding alone does not reset it).
