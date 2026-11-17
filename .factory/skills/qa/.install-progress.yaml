@@ -1,0 +1,7 @@
+default_target: local
+personas: [member, counterparty, admin]
+cleanup: reset-db
+imagemagick: true
+ci: github-optional
+video_evidence: false
+failure_learning: suggest_in_report

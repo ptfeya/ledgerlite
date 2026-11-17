@@ -1,0 +1,153 @@
+name: QA
+
+# Informational check: it posts a report and does not gate merge unless added to branch protection.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: qa-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    # Fork PRs get no secrets, so the keyed agent cannot run for them.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ledgerlite
+          POSTGRES_PASSWORD: ledgerlite
+          POSTGRES_DB: ledgerlite
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ledgerlite -d ledgerlite"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      CI: true
+      DATABASE_URL: postgresql://ledgerlite:ledgerlite@localhost:5432/ledgerlite
+      JWT_SECRET: ci-only-secret-not-for-production
+      SEED_PASSWORD: ci-only-seed-password
+    steps:
+      # The code under test: the PR head (or the dispatched ref).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The instructions the agent follows: always from the base branch, so a PR
+      # cannot rewrite the skills that run with FACTORY_API_KEY.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          path: base
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Use base-branch QA instructions
+        id: skills
+        run: |
+          if [ -f base/.factory/skills/qa/SKILL.md ]; then
+            rm -rf .factory
+            cp -R base/.factory .factory
+            # AGENTS.md is also instructions the keyed agent reads, so it comes from base too.
+            rm -f AGENTS.md
+            if [ -f base/AGENTS.md ]; then cp base/AGENTS.md AGENTS.md; fi
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            mkdir -p qa-results
+            printf '## QA Report\n\n:grey_question: INCONCLUSIVE: the QA skills do not exist on the base branch yet, so QA did not run. It will run once they are merged.\n' > qa-results/report.md
+          fi
+      - name: Read QA config
+        id: cfg
+        if: steps.skills.outputs.present == 'true'
+        run: |
+          C=.factory/skills/qa/config.yaml
+          VE=$(yq '.video_evidence' $C)
+          CP=$(yq '.droid_control.compose' $C)
+          [ "$VE" = "true" ] || CP=false
+          echo "video=$VE" >> "$GITHUB_OUTPUT"
+          echo "compose=$CP" >> "$GITHUB_OUTPUT"
+          echo "imagemagick=$(yq '.imagemagick' $C)" >> "$GITHUB_OUTPUT"
+      - name: Install system tools
+        if: steps.skills.outputs.present == 'true'
+        run: |
+          sudo apt-get update -qq
+          PKGS=""
+          [ "${{ steps.cfg.outputs.imagemagick }}" = "true" ] && PKGS="$PKGS imagemagick"
+          { [ "${{ steps.cfg.outputs.video }}" = "true" ] || [ "${{ steps.cfg.outputs.compose }}" = "true" ]; } && PKGS="$PKGS ffmpeg"
+          [ -n "$PKGS" ] && sudo apt-get install -y -qq $PKGS || true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.skills.outputs.present == 'true'
+        with:
+          node-version: 22
+      # Tradeoff: this pipes an unpinned, unchecksummed installer into sh. Factory
+      # publishes no versioned checksum for it, so we accept that risk. The step has
+      # no secrets in its environment, which limits the blast radius.
+      - name: Install droid CLI
+        if: steps.skills.outputs.present == 'true'
+        run: |
+          curl -fsSL https://app.factory.ai/cli | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run QA
+        id: qa
+        if: steps.skills.outputs.present == 'true'
+        continue-on-error: true
+        timeout-minutes: 18
+        env:
+          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
+          QA_EVIDENCE_TOKEN: ${{ steps.cfg.outputs.video == 'true' && secrets.QA_EVIDENCE_TOKEN || '' }}
+          REPO_ID: ${{ github.event.repository.id }}
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || format('origin/{0}', github.event.repository.default_branch) }}
+          VIDEO: ${{ steps.cfg.outputs.video }}
+          COMPOSE: ${{ steps.cfg.outputs.compose }}
+        run: |
+          mkdir -p qa-results
+          EXTRA=""
+          [ "$VIDEO" = "true" ] && EXTRA="$EXTRA Use droid-control Capture and upload video evidence per the qa skill's Evidence Capture rules."
+          [ "$COMPOSE" = "true" ] && EXTRA="$EXTRA Run droid-control Compose for each captured flow before upload."
+          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: qa-results
+          path: |
+            qa-results/
+            qa-output.txt
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Post QA report as PR comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            if (fs.existsSync('qa-results/report.md')) {
+              body = fs.readFileSync('qa-results/report.md', 'utf8');
+              if (!body.trimStart().startsWith('## QA Report')) body = '## QA Report\n\n' + body;
+            } else {
+              const out = fs.existsSync('qa-output.txt') ? fs.readFileSync('qa-output.txt', 'utf8').slice(-20000) : 'no output';
+              body = '## QA Report\n\n:no_entry: QA produced no report.\n\n<details><summary>Output</summary>\n\n```\n' + out + '\n```\n\n</details>';
+            }
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            body = `<!-- qa-report -->\n${body}\n\n---\n[Workflow run and downloadable artifacts](${run})`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body.startsWith('<!-- qa-report -->'));
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });

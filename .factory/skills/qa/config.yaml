@@ -1,0 +1,59 @@
+project: LedgerLite
+platform: github
+imagemagick: true
+video_evidence: false
+droid_control:
+  plugin: droid-control@factory-plugins
+  compose: false
+environments:
+  local:
+    url: http://localhost:8000
+    restrictions:
+      - Run only against a throwaway QA database, never shared or production data
+default_target: local
+auth:
+  method: email-password
+  provider: custom (JWT bearer on unprefixed API routes, cookie session + CSRF for /ui)
+personas:
+  - name: member
+    description: 'Seeded regular user who moves money between own accounts and to other users'
+    email: alice@example.com
+    credentials_source: env-var
+    secret_name: SEED_PASSWORD
+    test_focus: [login, accounts, transfer, history, overdraft errors, idempotency]
+    cannot_do:
+      - Call POST /reconcile (admin only)
+      - Read another user's account entries
+      - Use the funding account as transfer source or destination
+  - name: counterparty
+    description: 'Seeded second user, recipient of transfers'
+    email: bob@example.com
+    credentials_source: env-var
+    secret_name: SEED_PASSWORD
+    test_focus: [receiving transfers, recipient email lookup]
+    cannot_do:
+      - Call POST /reconcile (admin only)
+  - name: admin
+    description: 'User promoted with `python -m app.seed --admin-email qa-admin@example.com`'
+    email: qa-admin@example.com
+    credentials_source: env-var
+    secret_name: SEED_PASSWORD
+    test_focus: [POST /reconcile]
+    cannot_do: []
+apps:
+  api:
+    path_patterns: ['app/routes/api.py', 'app/ledger.py', 'app/auth.py', 'app/security.py', 'db/schema.sql', 'app/seed.py', 'app/config.py', 'app/db.py', 'app/main.py']
+    skill: qa-api
+    test_tool: curl
+  web:
+    path_patterns: ['app/routes/pages.py', 'app/templates/**', 'app/static/**', 'app/ledger.py', 'app/auth.py', 'app/security.py', 'db/schema.sql', 'app/main.py']
+    skill: qa-web
+    test_tool: agent-browser
+feature_flags:
+  provider: none
+integrations: {}
+cleanup:
+  auto_cleanup: true
+  strategy: reset-db
+  instructions: 'QA uses a throwaway Postgres database. Re-run `uv run python -m app.seed` to restore demo data; drop and recreate the database if state is dirty.'
+failure_learning: suggest_in_report
