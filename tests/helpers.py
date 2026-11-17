@@ -4,6 +4,9 @@ import psycopg
 from fastapi.testclient import TestClient
 
 TEST_PASSWORD = "test-password"
+TRANSFER_FAILURE_MESSAGE = (
+    "We could not complete this transfer. Check the recipient and your balance."
+)
 
 
 def api_login(client: TestClient, user: str, password: str = TEST_PASSWORD) -> dict:

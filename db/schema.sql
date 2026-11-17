@@ -13,6 +13,13 @@ CREATE TABLE IF NOT EXISTS users (
 -- Upgrade existing databases without granting privileges to existing users.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
 
+-- One bounded counter per user, shared by all UI sessions and app workers.
+CREATE TABLE IF NOT EXISTS transfer_rate_limits (
+    user_id           bigint PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    window_started_at timestamptz NOT NULL DEFAULT statement_timestamp(),
+    attempts          integer NOT NULL DEFAULT 1 CHECK (attempts > 0)
+);
+
 -- System accounts (e.g. the funding account) have no owning user, so no login
 -- can ever reach them. User accounts always have an owner.
 CREATE TABLE IF NOT EXISTS accounts (
