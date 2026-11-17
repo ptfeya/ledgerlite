@@ -105,15 +105,18 @@ def resolve_target(database_url: str) -> Target:
         if not _IDENT.match(ident):
             raise HarnessError(f"unsafe database identifier {ident!r}")
 
-    server = "|".join(
-        info.get(key) or os.environ.get(env_name) or ""
+    # Pin inherited libpq defaults into the URL: the app runs with a scrubbed environment.
+    effective = {
+        key: info.get(key) or os.environ.get(env_name) or ""
         for key, env_name in (("host", "PGHOST"), ("hostaddr", "PGHOSTADDR"), ("port", "PGPORT"))
-    )
+    }
     return Target(
         dbname=dbname,
         role=role,
-        admin_url=make_conninfo(database_url, dbname="postgres"),
-        server=server,
+        admin_url=make_conninfo(
+            database_url, dbname="postgres", **{k: v for k, v in effective.items() if v}
+        ),
+        server="|".join(effective.values()),
     )
 
 
@@ -411,8 +414,8 @@ def ensure_user(
         (email, hash_password(password), admin),
     ).fetchone()
     user_id = row["id"]
-    result = {}
-    for name, cents in accounts:
+    account_ids = {}
+    for name, _ in accounts:
         found = conn.execute(
             "SELECT id FROM accounts WHERE user_id = %s AND name = %s ORDER BY id LIMIT 1",
             (user_id, name),
@@ -425,8 +428,16 @@ def ensure_user(
                 (user_id, name),
             ).fetchone()["id"]
         )
-        set_balance(conn, account_id, cents)
-        result[name] = {"account_id": account_id, "balance_cents": cents}
+        account_ids[name] = account_id
+    # One global lock order for the whole batch, so concurrent transfers cannot deadlock with it.
+    conn.execute(
+        "SELECT id FROM accounts WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+        ([*account_ids.values(), _system_account(conn)],),
+    )
+    result = {}
+    for name, cents in accounts:
+        set_balance(conn, account_ids[name], cents)
+        result[name] = {"account_id": account_ids[name], "balance_cents": cents}
     conn.commit()
     return {"email": email, "user_id": user_id, "accounts": result}
 

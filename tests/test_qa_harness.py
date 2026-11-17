@@ -5,7 +5,7 @@ import json
 
 import psycopg
 import pytest
-from psycopg.conninfo import make_conninfo
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
 from app.config import Settings
@@ -293,3 +293,45 @@ def test_set_balance_waits_for_in_flight_transfer(db, ids):
     worker.join(timeout=10)
     assert h.account_balance(db, account) == 0
     assert start == 100_000
+
+
+def test_inherited_libpq_port_is_pinned_into_connection_urls(monkeypatch):
+    monkeypatch.setenv("PGPORT", "55432")
+    target = h.resolve_target("postgresql://u:p@localhost/ledgerlite")
+    assert conninfo_to_dict(target.admin_url)["port"] == "55432"
+    app = conninfo_to_dict(target.url_for("pw"))
+    assert app["port"] == "55432"
+    assert app["dbname"] == target.dbname and app["user"] == target.role
+
+
+def test_ensure_user_locks_accounts_in_id_order(db, ids):
+    import threading
+
+    checking, savings = ids["alice"]["Checking"], ids["alice"]["Savings"]
+    assert checking < savings
+    holder = psycopg.connect(db.info.dsn, password=db.info.password, row_factory=dict_row)
+    holder.execute("SET lock_timeout = '5s'")
+    holder.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (checking,))
+    errors = []
+
+    def fixture():
+        try:
+            with psycopg.connect(db.info.dsn, password=db.info.password, row_factory=dict_row) as c:
+                h.ensure_user(
+                    c, "alice@example.com", TEST_PASSWORD, [("Savings", 1), ("Checking", 2)]
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    worker = threading.Thread(target=fixture)
+    worker.start()
+    worker.join(timeout=1)
+    assert worker.is_alive()
+    # Would deadlock if the fixture already held Savings while waiting for Checking.
+    holder.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (savings,))
+    holder.commit()
+    holder.close()
+    worker.join(timeout=10)
+    assert errors == []
+    assert h.account_balance(db, checking) == 2
+    assert h.account_balance(db, savings) == 1
