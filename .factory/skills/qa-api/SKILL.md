@@ -13,9 +13,9 @@ Describes WHAT to verify. The orchestrator picks only flows relevant to the diff
 
 Test the checked-out branch, never a remote deployment.
 
-1. Ensure Postgres is up and `DATABASE_URL`, `JWT_SECRET`, `SEED_PASSWORD` are set (CI provides them). Locally, load `.env` with `set -a; . ./.env; set +a` and never `cat`, echo, or print it or its values.
-2. Follow the orchestrator's Step 4: run `.factory/skills/qa/scripts/qa-server.sh verify` and reuse the server only if it passes. Otherwise run `qa-server.sh start` with the Execute tool's `fireAndForget: true` (a shell `&` is killed when the call returns), then poll `verify`. It uses the throwaway `<db>_qa` database and seeds the admin persona.
-3. Base URL: the output of `qa-server.sh url` (normally `http://localhost:8000`). Routes have no `/api` prefix.
+1. `SEED_PASSWORD` must be available for logging in (CI provides it). Locally, never `cat`, echo, or print `.env` or its values.
+2. Follow the orchestrator's Step 4 exactly: check the server with `env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent .factory/skills/qa/scripts/qa-server.sh verify` and reuse it only if it passes. In CI never start a server or execute anything from the checkout. Locally, start one as Step 4 describes, using the Execute tool's `fireAndForget: true` (a shell `&` is killed when the call returns). It uses the throwaway `<db>_qa` database and seeds the admin persona.
+3. Base URL: the output of `env -i ... qa-server.sh url` (normally `http://localhost:8000`). Routes have no `/api` prefix.
 
 ## Authentication
 

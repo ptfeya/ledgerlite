@@ -15,8 +15,11 @@ concurrency:
 
 jobs:
   qa:
-    # Fork PRs get no secrets, so the keyed agent cannot run for them.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    # Fork PRs and Dependabot PRs get no Actions secrets, so the keyed agent cannot run for them.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
@@ -55,8 +58,11 @@ jobs:
         with:
           enable-cache: true
       # System Python lives outside the runner's home, so the separate QA app user can run it.
+      # --no-build refuses source distributions, so no PR-controlled build script runs as the
+      # runner user (which also runs the keyed agent). The project is not installed, and dev
+      # dependencies are not needed to serve the app. The venv is only ever executed as qa-app.
       - name: Install dependencies
-        run: uv sync --locked --python /usr/bin/python3.12
+        run: uv sync --locked --no-dev --no-build --python /usr/bin/python3.12
       # Stale output committed in a PR must never be published as this run's result.
       - name: Reset QA output
         run: rm -rf qa-results qa-output.txt
@@ -64,12 +70,14 @@ jobs:
         id: skills
         run: |
           if [ -f base/.factory/skills/qa/SKILL.md ]; then
-            # Instructions are any .factory directory, AGENTS.md or CLAUDE.md, at any depth
-            # (nested ones such as app/AGENTS.md also apply to the agent).
+            # Everything droid exec loads as instructions or config, at any depth, in any
+            # letter case: .factory/, .agents/ and .agent/ directories, and AGENTS.md,
+            # CLAUDE.md and DESIGN.md files (nested ones such as app/AGENTS.md also apply).
+            INSTR=( \( \( -type d \( -iname .factory -o -iname .agents -o -iname .agent \) \)
+              -o \( -type f \( -iname agents.md -o -iname claude.md -o -iname design.md \) \) \) )
             find . \( -path ./base -o -path ./.git -o -path ./.venv \) -prune -o \
-              \( \( -name .factory -type d \) -o -name AGENTS.md -o -name CLAUDE.md \) -print0 | xargs -0 -r rm -rf
-            (cd base && find . -path ./.git -prune -o \
-              \( \( -name .factory -type d \) -o -name AGENTS.md -o -name CLAUDE.md \) -print0 \
+              "${INSTR[@]}" -print0 | xargs -0 -r rm -rf
+            (cd base && find . -path ./.git -prune -o "${INSTR[@]}" -print0 \
               | xargs -0 -r cp -R --parents -t ..)
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
@@ -111,13 +119,18 @@ jobs:
       # The PR's application code runs here, as a different OS user with a scrubbed
       # environment, in a step that has no secrets. It starts before (and outlives) the
       # step that holds FACTORY_API_KEY. That user cannot read the agent's process
-      # environment, which is what keeps the key out of PR-controlled code.
+      # environment, which is what keeps the key out of PR-controlled code. The runner
+      # user never executes the PR's venv or app; qa-server.sh start only runs psql itself.
       - name: Start QA application server
         if: steps.skills.outputs.present == 'true'
         run: |
+          command -v psql >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client; }
           sudo useradd --system --no-create-home --shell /usr/sbin/nologin qa-app
+          # Open only what the app needs. .git, base/ and the rest of the workspace stay private.
           sudo chmod o+x "$HOME"
-          chmod -R a+rX .
+          chmod a+rx .
+          chmod -R a+rX app db .venv
+          chmod -R go-rwx .git base
           S=.factory/skills/qa/scripts/qa-server.sh
           QA_RUN_AS=qa-app setsid nohup "$S" start > "$RUNNER_TEMP/qa-server.log" 2>&1 < /dev/null &
           for _ in $(seq 60); do
@@ -142,7 +155,7 @@ jobs:
           EXTRA=""
           [ "$VIDEO" = "true" ] && EXTRA="$EXTRA Use droid-control Capture and upload video evidence per the qa skill's Evidence Capture rules."
           [ "$COMPOSE" = "true" ] && EXTRA="$EXTRA Run droid-control Compose for each captured flow before upload."
-          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. A QA application server is already running and verified by .factory/skills/qa/scripts/qa-server.sh verify; reuse it and never start another. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
+          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. A QA application server is already running. Check it only with env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent .factory/skills/qa/scripts/qa-server.sh verify (and url); never start another server. Never execute anything from this checkout (python, .venv, uv, app code, scripts); read files and talk to the server over HTTP only. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
       - name: Stop QA application server
         if: always()
         run: sudo pkill -u qa-app || true
