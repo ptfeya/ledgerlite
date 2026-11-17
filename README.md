@@ -161,7 +161,9 @@ WEBHOOK_SIGNING_SECRET=...   # generate with: openssl rand -hex 32
 ```
 
 - `WEBHOOK_URL` must be an absolute `http://` or `https://` URL. Use HTTPS for anything other
-  than localhost; certificates and hostnames are verified. `WEBHOOK_SIGNING_SECRET` is required
+  than localhost; certificates and hostnames are verified. Percent-encode any non-ASCII
+  characters in the path or query (`/caf%C3%A9`, not `/café`); the URL is sent exactly as
+  configured. `WEBHOOK_SIGNING_SECRET` is required
   whenever `WEBHOOK_URL` is set; the app and worker refuse to start without it.
 - On an existing database, create the webhook tables with `uv run python -m app.seed`
   (safe to re-run).

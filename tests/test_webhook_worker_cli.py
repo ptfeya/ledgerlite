@@ -189,6 +189,37 @@ def test_disabled_worker_sends_and_mutates_nothing(db, queue, receiver, worker, 
     assert (outbox_events(db), dead_letters(db)) == before
 
 
+@pytest.mark.parametrize(
+    "target", ["/caf\u00e9", "/hooks?name=caf\u00e9"], ids=["unicode-path", "unicode-query"]
+)
+def test_unsendable_url_exits_2_then_encoded_url_delivers_backlog(
+    db, queue, receiver, worker, target
+):
+    events = queue(2, receiver.url())
+    before = (outbox_events(db), dead_letters(db))
+
+    for mode in [("--once",), ("--poll-interval", "0.2")]:
+        code, output = worker.run(*mode, url=receiver.url(target), timeout=15)
+
+        assert code == 2, output
+        assert "WEBHOOK_URL must be an absolute http:// or https:// URL" in output
+        for needle in [target, "caf\u00e9", TEST_WEBHOOK_SECRET]:
+            assert needle not in output
+    time.sleep(0.2)
+    assert receiver.requests == []
+    assert (outbox_events(db), dead_letters(db)) == before
+
+    encoded = target.replace("\u00e9", "%C3%A9")
+    code, output = worker.run("--once", url=receiver.url(encoded))
+
+    assert code == 0, output
+    assert receiver.paths() == [encoded, encoded]
+    assert sorted(r.body for r in receiver.requests) == sorted(e["body"].encode() for e in events)
+    for request in receiver.requests:
+        assert verify(TEST_WEBHOOK_SECRET, request.headers["x-ledgerlite-signature"], request.body)
+    assert [(e["status"], e["attempts"]) for e in outbox_events(db)] == [("delivered", 1)] * 2
+
+
 def test_restarted_worker_uses_current_url_and_secret_for_queued_events(
     db, queue, receiver, worker
 ):

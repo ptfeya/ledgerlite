@@ -11,6 +11,10 @@ VALID_URLS = [
     "http://127.0.0.1:8101/hooks",
     "https://hooks.example.com/ledgerlite?source=ledger",
     "  HTTPS://Hooks.Example.com:8443/path  ",
+    # Percent-encoded targets are sent exactly as configured, never re-encoded.
+    "http://127.0.0.1:8101/caf%C3%A9",
+    "http://127.0.0.1:8101/hooks?name=caf%C3%A9&check=%E2%9C%93",
+    "https://café.example/hooks",
 ]
 INVALID_URLS = [
     "ftp://hooks.example.com/x",
@@ -25,6 +29,14 @@ INVALID_URLS = [
     "http://hooks example.com/x",
     "http://hooks.example.com/a\nb",
 ]
+# Accepted by urlsplit but impossible to send: http.client only writes an ASCII
+# request target, and the socket layer cannot IDNA-encode these hosts.
+UNSENDABLE_URLS = {
+    "unicode-path": "http://127.0.0.1:8101/café",
+    "unicode-query": "http://127.0.0.1:8101/hooks?name=café",
+    "empty-host-label": "http://hooks..example.com/x",
+    "overlong-host-label": f"http://{'a' * 64}.example.com/x",
+}
 
 
 @pytest.fixture
@@ -82,7 +94,7 @@ def test_enabled_url_requires_a_signing_secret(make_settings, secret):
     assert_safe_error(caught.value)
 
 
-@pytest.mark.parametrize("url", INVALID_URLS)
+@pytest.mark.parametrize("url", INVALID_URLS + list(UNSENDABLE_URLS.values()), ids=str)
 def test_enabled_url_must_be_absolute_http_or_https(make_settings, url):
     with pytest.raises(ValidationError) as caught:
         make_settings(WEBHOOK_URL=url, WEBHOOK_SIGNING_SECRET=TEST_WEBHOOK_SECRET)
@@ -91,13 +103,24 @@ def test_enabled_url_must_be_absolute_http_or_https(make_settings, url):
     assert_safe_error(caught.value)
 
 
-def test_invalid_webhook_config_stops_app_startup_without_leaking_secret(webhook_config):
+@pytest.mark.parametrize(
+    "url",
+    [
+        "gopher://hooks.example.com/",
+        UNSENDABLE_URLS["unicode-path"],
+        UNSENDABLE_URLS["unicode-query"],
+    ],
+    ids=["scheme", "unicode-path", "unicode-query"],
+)
+def test_invalid_webhook_config_stops_app_startup_without_leaking_secret(webhook_config, url):
     from app.main import app
 
-    webhook_config(url="gopher://hooks.example.com/", secret=TEST_WEBHOOK_SECRET)
+    webhook_config(url=url, secret=TEST_WEBHOOK_SECRET)
     with pytest.raises(ValidationError) as caught, TestClient(app, base_url="http://localhost"):
         pass
 
+    assert "WEBHOOK_URL must be an absolute http:// or https:// URL" in str(caught.value)
+    assert url not in str(caught.value)
     assert_safe_error(caught.value)
 
 

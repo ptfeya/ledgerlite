@@ -43,6 +43,15 @@ class Settings(BaseSettings):
             raise ValueError(_WEBHOOK_URL_ERROR) from None
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ValueError(_WEBHOOK_URL_ERROR)
+        # Reject what the stdlib transport cannot send rather than fail at delivery:
+        # http.client writes the request target as ASCII (percent-encode instead),
+        # and the socket layer IDNA-encodes the host.
+        if not (parts.path + parts.query).isascii():
+            raise ValueError(_WEBHOOK_URL_ERROR)
+        try:
+            parts.hostname.encode("idna")
+        except UnicodeError:
+            raise ValueError(_WEBHOOK_URL_ERROR) from None
         return value
 
     @field_validator("webhook_signing_secret")
