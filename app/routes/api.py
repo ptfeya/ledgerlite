@@ -6,7 +6,14 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
 from app import ledger
-from app.auth import AuthenticationUnavailable, CurrentUser, authenticate, get_api_user, get_pool
+from app.auth import (
+    AuthenticationUnavailable,
+    CurrentUser,
+    authenticate,
+    get_api_admin,
+    get_api_user,
+    get_pool,
+)
 from app.config import get_settings
 from app.security import create_token
 
@@ -112,7 +119,7 @@ def entries(
 
 @router.post("/reconcile")
 def reconcile(
-    _: CurrentUser = Depends(get_api_user), pool: ConnectionPool = Depends(get_pool)
+    _: CurrentUser = Depends(get_api_admin), pool: ConnectionPool = Depends(get_pool)
 ) -> dict:
     imbalance = ledger.ledger_imbalance(pool)
     if imbalance == 0:

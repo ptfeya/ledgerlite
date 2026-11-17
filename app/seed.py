@@ -1,5 +1,6 @@
 """Apply the schema and seed demo data: `uv run python -m app.seed`."""
 
+import argparse
 from functools import lru_cache
 
 import psycopg
@@ -62,12 +63,28 @@ def seed(conn: psycopg.Connection, password: str) -> bool:
     return True
 
 
+def seed_admin(conn: psycopg.Connection, email: str, password: str) -> None:
+    """Explicitly create or promote an admin without changing an existing password."""
+    conn.execute(
+        "INSERT INTO users (email, password_hash, is_admin) VALUES (%s, %s, true) "
+        "ON CONFLICT (email) DO UPDATE SET is_admin = true",
+        (email.strip().lower(), _hash(password)),
+    )
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--admin-email", help="Create or promote this user as an admin")
+    args = parser.parse_args()
     settings = get_settings()
     with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
         apply_schema(conn)
         created = seed(conn, settings.seed_password)
+        if args.admin_email:
+            seed_admin(conn, args.admin_email, settings.seed_password)
     print("Seeded demo data." if created else "Already seeded; nothing to do.")
+    if args.admin_email:
+        print("Admin user created or promoted.")
 
 
 if __name__ == "__main__":

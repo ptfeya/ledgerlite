@@ -77,6 +77,32 @@ def test_user_can_send_money_to_another_users_account(db, client, alice, ids):
     assert balance(db, ids["bob"]["Checking"]) == start + 300
 
 
+def test_non_admin_cannot_reconcile(client, alice, monkeypatch):
+    def forbidden_ledger_read(pool):
+        pytest.fail("Non-admins must not run the ledger-wide check")
+
+    monkeypatch.setattr("app.routes.api.ledger.ledger_imbalance", forbidden_ledger_read)
+    response = client.post("/reconcile", headers=alice)
+
+    assert response.status_code == 403
+
+
+def test_admin_access_is_checked_on_each_request(db, client, admin):
+    assert client.post("/reconcile", headers=admin).status_code == 200
+
+    db.execute("UPDATE users SET is_admin = false WHERE email = 'admin@example.com'")
+    assert client.post("/reconcile", headers=admin).status_code == 403
+
+    db.execute("UPDATE users SET is_admin = true WHERE email = 'admin@example.com'")
+    assert client.post("/reconcile", headers=admin).status_code == 200
+
+
+def test_deleted_admin_token_is_rejected(db, client, admin):
+    db.execute("DELETE FROM users WHERE email = 'admin@example.com'")
+
+    assert client.post("/reconcile", headers=admin).status_code == 401
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -90,18 +116,20 @@ def test_api_requires_a_token(client, method, path):
     assert client.request(method, path).status_code == 401
 
 
-def test_invalid_and_expired_tokens_are_rejected(client):
+@pytest.mark.parametrize(("method", "path"), [("GET", "/accounts"), ("POST", "/reconcile")])
+def test_invalid_and_expired_tokens_are_rejected(client, method, path):
     secret = get_settings().jwt_secret
     expired = jwt.encode({"sub": "1", "exp": int(time.time()) - 10}, secret, algorithm="HS256")
     forged = jwt.encode({"sub": "1", "exp": int(time.time()) + 600}, "x" * 32, algorithm="HS256")
 
     for token in (expired, forged, "garbage"):
-        response = client.get("/accounts", headers={"Authorization": f"Bearer {token}"})
+        response = client.request(method, path, headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 401
 
 
-def test_session_cookie_does_not_authenticate_the_json_api(client):
-    assert page_login(client, "alice").status_code == 303
+@pytest.mark.parametrize("user", ["alice", "admin"])
+def test_session_cookie_does_not_authenticate_the_json_api(client, user):
+    assert page_login(client, user).status_code == 303
     assert client.cookies.get("ll_session")
 
     # The cookie is for HTML pages only. State-changing API routes ignore it, so a
@@ -109,3 +137,10 @@ def test_session_cookie_does_not_authenticate_the_json_api(client):
     assert client.post("/reconcile").status_code == 401
     assert client.post("/transfers", headers={"Idempotency-Key": "k"}, json={}).status_code == 401
     assert api_login(client, "alice")  # bearer login still works
+
+
+def test_admin_cookie_does_not_elevate_a_non_admin_token(client, alice):
+    assert page_login(client, "admin").status_code == 303
+
+    assert client.post("/reconcile", headers=alice).status_code == 403
+    assert client.post("/reconcile", headers={"Authorization": "Bearer invalid"}).status_code == 401

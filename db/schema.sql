@@ -6,8 +6,12 @@ CREATE TABLE IF NOT EXISTS users (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     email         text NOT NULL UNIQUE CHECK (email = lower(email)),
     password_hash text NOT NULL,
+    is_admin      boolean NOT NULL DEFAULT false,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- Upgrade existing databases without granting privileges to existing users.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
 
 -- System accounts (e.g. the funding account) have no owning user, so no login
 -- can ever reach them. User accounts always have an owner.

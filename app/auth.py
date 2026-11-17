@@ -18,6 +18,7 @@ class CurrentUser:
     id: int
     email: str
     token: str
+    is_admin: bool
 
 
 class LoginRequired(Exception):
@@ -52,8 +53,10 @@ def _user_for_token(pool: ConnectionPool, token: str) -> CurrentUser | None:
     if user_id is None:
         return None
     with pool.connection() as conn:
-        row = conn.execute("SELECT id, email FROM users WHERE id = %s", (user_id,)).fetchone()
-    return CurrentUser(row["id"], row["email"], token) if row else None
+        row = conn.execute(
+            "SELECT id, email, is_admin FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+    return CurrentUser(row["id"], row["email"], token, row["is_admin"]) if row else None
 
 
 def get_api_user(
@@ -65,6 +68,13 @@ def get_api_user(
     user = _user_for_token(pool, credentials.credentials) if credentials else None
     if user is None:
         raise HTTPException(401, "Not authenticated", headers={"WWW-Authenticate": "Bearer"})
+    return user
+
+
+def get_api_admin(user: CurrentUser = Depends(get_api_user)) -> CurrentUser:
+    """Require an admin authenticated by a bearer token, never a session cookie."""
+    if not user.is_admin:
+        raise HTTPException(403, "Admin access required")
     return user
 
 
