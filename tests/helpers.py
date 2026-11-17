@@ -4,6 +4,9 @@ import psycopg
 from fastapi.testclient import TestClient
 
 TEST_PASSWORD = "test-password"
+# Port 9 (discard) is not listening, so any accidental delivery attempt fails loudly.
+TEST_WEBHOOK_URL = "http://127.0.0.1:9/ledgerlite-test-webhooks"
+TEST_WEBHOOK_SECRET = "test-only-webhook-secret-marker"
 TRANSFER_FAILURE_MESSAGE = (
     "We could not complete this transfer. Check the recipient and your balance."
 )
@@ -33,6 +36,14 @@ def ledger_total(db: psycopg.Connection) -> int:
 
 def count(db: psycopg.Connection, table: str) -> int:
     return db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]  # noqa: S608
+
+
+def outbox_events(db: psycopg.Connection) -> list[dict]:
+    return db.execute("SELECT * FROM webhook_outbox ORDER BY created_at, event_id").fetchall()
+
+
+def dead_letters(db: psycopg.Connection) -> list[dict]:
+    return db.execute("SELECT * FROM webhook_dead_letter ORDER BY failed_at, event_id").fetchall()
 
 
 def post_transfer(
