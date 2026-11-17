@@ -44,6 +44,20 @@ Seeded users (password is `SEED_PASSWORD` from `.env`, default `ledgerlite-dev`;
 
 Opening balances are funded from a system account that no user owns, so the ledger sums to zero from the start.
 
+### Create an admin
+
+All users, including Alice, Bob, and users in an existing database, default to non-admin.
+Explicitly create an admin for local development:
+
+```sh
+uv run python -m app.seed --admin-email admin@example.com
+```
+
+This also works on an already seeded database. A new admin uses `SEED_PASSWORD` and has
+no accounts. If the email already exists, the command promotes that user without
+changing their password or accounts. Re-running it is safe. Seeding without
+`--admin-email` does not grant or revoke admin access.
+
 ## Test
 
 ```sh
@@ -77,7 +91,11 @@ curl -s localhost:8000/transfers -H "Authorization: Bearer $TOKEN" \
   -d '{"from_account_id": 2, "to_account_id": 4, "amount_cents": 2500}'
 
 curl -s localhost:8000/accounts/2/entries -H "Authorization: Bearer $TOKEN"
-curl -s -X POST localhost:8000/reconcile -H "Authorization: Bearer $TOKEN"
+
+# Reconcile requires an admin token (create the admin as documented above).
+ADMIN_TOKEN=$(curl -s localhost:8000/auth/login -H 'content-type: application/json' \
+  -d '{"email":"admin@example.com","password":"ledgerlite-dev"}' | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+curl -s -X POST localhost:8000/reconcile -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 | Method and path               | Behavior                                                                                  |
@@ -86,7 +104,7 @@ curl -s -X POST localhost:8000/reconcile -H "Authorization: Bearer $TOKEN"
 | `GET /accounts`               | The caller's accounts with balances.                                                      |
 | `POST /transfers`             | Moves money. Requires an `Idempotency-Key` header. See below.                              |
 | `GET /accounts/{id}/entries`  | Ledger entries, newest first (`?limit=`, max 500). Someone else's account returns 404.     |
-| `POST /reconcile`             | `{"status":"ok"}` or `{"status":"imbalance","imbalance_cents":N}`. Requires a token.       |
+| `POST /reconcile`             | `{"status":"ok"}` or `{"status":"imbalance","imbalance_cents":N}`. Requires an admin token; non-admins get 403, missing or invalid tokens get 401. |
 
 Account ids in the seeded data are `1` (system funding), `2`/`3` (Alice Checking/Savings), `4`/`5` (Bob Checking/Savings).
 

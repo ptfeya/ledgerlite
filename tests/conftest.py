@@ -12,7 +12,7 @@ from psycopg.rows import dict_row  # noqa: E402
 
 from app.config import Settings, get_settings  # noqa: E402
 from app.db import apply_schema, make_pool  # noqa: E402
-from app.seed import seed  # noqa: E402
+from app.seed import seed, seed_admin  # noqa: E402
 from tests.helpers import TEST_PASSWORD, api_login  # noqa: E402
 
 # Tests run against a throwaway "<db>_test" database on the same server, never
@@ -43,6 +43,7 @@ def _fresh_data(_test_database):
     with psycopg.connect(TEST_DATABASE_URL, row_factory=dict_row) as conn:
         conn.execute("TRUNCATE ledger_entries, transfers, accounts, users RESTART IDENTITY CASCADE")
         seed(conn, TEST_PASSWORD)
+        seed_admin(conn, "admin@example.com", TEST_PASSWORD)
 
 
 @pytest.fixture
@@ -93,3 +94,8 @@ def alice(client):
 @pytest.fixture
 def bob(client):
     return api_login(client, "bob")
+
+
+@pytest.fixture
+def admin(client):
+    return api_login(client, "admin")

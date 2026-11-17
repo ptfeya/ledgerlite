@@ -8,12 +8,14 @@ from tests.conftest import TEST_DATABASE_URL
 from tests.helpers import balance, ledger_total, post_transfer
 
 
-def test_seeded_ledger_sums_to_zero(db, client, alice):
+def test_seeded_ledger_sums_to_zero(db, client, admin):
     assert ledger_total(db) == 0
-    assert client.post("/reconcile", headers=alice).json() == {"status": "ok"}
+    response = client.post("/reconcile", headers=admin)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
-def test_ledger_sums_to_zero_after_many_transfers(db, client, alice, bob, ids):
+def test_ledger_sums_to_zero_after_many_transfers(db, client, alice, bob, admin, ids):
     a_check, a_save = ids["alice"]["Checking"], ids["alice"]["Savings"]
     b_check = ids["bob"]["Checking"]
 
@@ -25,7 +27,9 @@ def test_ledger_sums_to_zero_after_many_transfers(db, client, alice, bob, ids):
     )
 
     assert ledger_total(db) == 0
-    assert client.post("/reconcile", headers=alice).json() == {"status": "ok"}
+    response = client.post("/reconcile", headers=admin)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
     # Every transfer has exactly one debit and one credit of equal size.
     rows = db.execute(
@@ -75,7 +79,7 @@ def test_concurrent_transfers_keep_ledger_balanced(db, pool, ids):
     assert balance(db, b_check) == start_b + 20 * 100 - 20 * 40
 
 
-def test_reconcile_reports_imbalance(db, client, alice, ids):
+def test_reconcile_reports_imbalance(db, client, admin, ids):
     # Bypass the commit-time balance trigger to simulate corruption.
     db.execute("ALTER TABLE ledger_entries DISABLE TRIGGER ledger_entries_balanced")
     try:
@@ -89,7 +93,7 @@ def test_reconcile_reports_imbalance(db, client, alice, ids):
             "VALUES (%s, %s, 123)",
             (transfer_id, ids["bob"]["Checking"]),
         )
-        response = client.post("/reconcile", headers=alice)
+        response = client.post("/reconcile", headers=admin)
     finally:
         db.execute("ALTER TABLE ledger_entries ENABLE TRIGGER ledger_entries_balanced")
 
