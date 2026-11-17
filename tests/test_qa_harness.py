@@ -16,10 +16,16 @@ from tools import qa_harness as h
 # --- guards (no database needed beyond conftest's autouse setup) ---------------------------
 
 
+@pytest.fixture(autouse=True)
+def _clean_libpq_env(monkeypatch):
+    for name in ("FACTORY_API_KEY", "QA_EVIDENCE_TOKEN", "PGHOST", "PGHOSTADDR", "PGSERVICE"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_target_is_derived_and_never_a_shared_database():
     for name in ("ledgerlite", "ledgerlite_test", "ledgerlite_qa", "ledgerlite_harness"):
         url = f"postgresql://u:p@localhost:5432/{name}"
-        target = h.resolve_target(url, env={})
+        target = h.resolve_target(url)
         assert target.dbname == "ledgerlite_harness"
         assert target.role == "ledgerlite_harness_app"
         assert "dbname=postgres" in target.admin_url or "/postgres" in target.admin_url
@@ -35,18 +41,31 @@ def test_target_is_derived_and_never_a_shared_database():
 )
 def test_refuses_non_local_hosts(url):
     with pytest.raises(h.HarnessError, match="non-local"):
-        h.resolve_target(url, env={})
+        h.resolve_target(url)
 
 
 @pytest.mark.parametrize("name", ["FACTORY_API_KEY", "QA_EVIDENCE_TOKEN"])
-def test_refuses_agent_credentials(name):
+def test_refuses_agent_credentials(name, monkeypatch):
+    monkeypatch.setenv(name, "x")
     with pytest.raises(h.HarnessError, match="credentials"):
-        h.resolve_target("postgresql://u:p@localhost/ledgerlite", env={name: "x"})
+        h.resolve_target("postgresql://u:p@localhost/ledgerlite")
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [("PGHOST", "db.example.com"), ("PGHOSTADDR", "10.0.0.5"), ("PGSERVICE", "prod")],
+)
+def test_refuses_inherited_libpq_overrides(name, value, monkeypatch):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(h.HarnessError, match="refusing"):
+        h.resolve_target("postgresql:///ledgerlite")
+    with pytest.raises(h.HarnessError, match="refusing"):
+        h.resolve_target("postgresql://u:p@localhost/ledgerlite")
 
 
 def test_refuses_unsafe_identifiers():
     with pytest.raises(h.HarnessError, match="unsafe"):
-        h.resolve_target("postgresql://u:p@localhost/x%22%3B%20DROP%20DATABASE%20y", env={})
+        h.resolve_target("postgresql://u:p@localhost/x%22%3B%20DROP%20DATABASE%20y")
 
 
 def test_account_specs_require_integer_cents():
@@ -114,7 +133,7 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(h, "LOG_PATH", tmp_path / "server.log")
     settings = Settings()
     url = make_conninfo(ADMIN_DATABASE_URL, dbname="ledgerlite_pytest")
-    target = h.resolve_target(url, env={})
+    target = h.resolve_target(url)
     assert target.dbname == "ledgerlite_pytest_harness"
     try:
         yield target, settings
@@ -150,6 +169,8 @@ def test_lifecycle_up_fixture_outage_restart_down(harness):
     state = h.load_state()
     assert oct(h.STATE_PATH.stat().st_mode & 0o777) == "0o600"
     port = state["port"]
+    assert state["jwt_secret"] != settings.jwt_secret
+    assert len(state["jwt_secret"]) >= 32
     assert _login(port, "alice@example.com", seed_pw) == 200
 
     conn = h._app_conn(state)
@@ -163,11 +184,18 @@ def test_lifecycle_up_fixture_outage_restart_down(harness):
     h.set_outage(target, False)
     assert _login(port, "alice@example.com", seed_pw) == 200
 
+    h.set_outage(target, True)
+    with pytest.raises(h.HarnessError, match="outage"):
+        h.cmd_restart(target, settings)
+    assert h.server_alive(h.load_state())  # a refused restart leaves the app running
+    h.set_outage(target, False)
+
     old_pid = state["pid"]
     restarted = h.cmd_restart(target, settings)
     new_state = h.load_state()
     assert restarted["running"] and new_state["pid"] != old_pid
     assert new_state["port"] == port
+    assert new_state["jwt_secret"] == state["jwt_secret"]
     assert not h.server_alive({"pid": old_pid, "nonce": state["nonce"]})
     assert _login(port, "dana@example.com", seed_pw) == 200  # data survived
 
@@ -198,3 +226,69 @@ def test_refuses_to_touch_database_without_marker(harness):
 def test_commands_need_a_running_harness(harness, monkeypatch):
     with pytest.raises(h.HarnessError, match="not up"):
         h.run(argparse.Namespace(command="fixture", kind="reset"))
+
+
+def test_refuses_existing_role_without_marker(harness):
+    target, settings = harness
+    with psycopg.connect(ADMIN_DATABASE_URL, autocommit=True) as admin:
+        admin.execute(f'CREATE ROLE "{target.role}" LOGIN')
+    try:
+        with pytest.raises(h.HarnessError, match="not a harness role"):
+            h.cmd_up(target, settings, reset=False)
+        with pytest.raises(h.HarnessError, match="not a harness role"):
+            h.cmd_down(target)
+        with psycopg.connect(ADMIN_DATABASE_URL, autocommit=True) as admin:
+            assert admin.execute(
+                "SELECT 1 FROM pg_roles WHERE rolname = %s", (target.role,)
+            ).fetchone()
+    finally:
+        with psycopg.connect(ADMIN_DATABASE_URL, autocommit=True) as admin:
+            admin.execute(f'DROP ROLE "{target.role}"')
+
+
+def test_state_is_bound_to_the_configured_target(harness):
+    target, settings = harness
+    h.cmd_up(target, settings, reset=False)
+    other = h.resolve_target(make_conninfo(ADMIN_DATABASE_URL, dbname="ledgerlite_other"))
+    for call in (
+        lambda: h.cmd_down(other),
+        lambda: h.cmd_restart(other, settings),
+        lambda: h.cmd_up(other, settings, reset=False),
+    ):
+        with pytest.raises(h.HarnessError, match="different database target"):
+            call()
+    assert h.server_alive(h.load_state())
+
+
+def test_set_balance_waits_for_in_flight_transfer(db, ids):
+    import threading
+
+    account = ids["alice"]["Checking"]
+    start = h.account_balance(db, account)
+    holder = psycopg.connect(db.info.dsn, password=db.info.password, row_factory=dict_row)
+    holder.execute("SELECT id FROM accounts WHERE id = %s FOR UPDATE", (account,))
+    transfer_id = holder.execute(
+        "INSERT INTO transfers (user_id, idempotency_key, request_hash, from_account_id, "
+        "to_account_id, amount_cents) VALUES (NULL, 'inflight', 'x', %s, %s, 50) RETURNING id",
+        (account, ids["system"]),
+    ).fetchone()["id"]
+    holder.execute(
+        "INSERT INTO ledger_entries (transfer_id, account_id, amount_cents) "
+        "VALUES (%s, %s, -50), (%s, %s, 50)",
+        (transfer_id, account, transfer_id, ids["system"]),
+    )
+
+    def adjust():
+        with psycopg.connect(db.info.dsn, password=db.info.password, row_factory=dict_row) as c:
+            h.set_balance(c, account, 0)
+            c.commit()
+
+    worker = threading.Thread(target=adjust)
+    worker.start()
+    worker.join(timeout=1)
+    assert worker.is_alive()  # blocked on the account lock, not reading a stale balance
+    holder.commit()
+    holder.close()
+    worker.join(timeout=10)
+    assert h.account_balance(db, account) == 0
+    assert start == 100_000

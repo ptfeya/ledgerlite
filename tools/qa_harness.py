@@ -34,12 +34,18 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from psycopg.rows import dict_row
 
+from app.config import get_settings
+from app.db import apply_schema
+from app.ledger import account_balance
+from app.seed import SEED_USERS, SYSTEM_ACCOUNT_NAME, seed, seed_admin
+
 ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = ROOT / "qa-results" / ".qa-harness.json"
 LOG_PATH = ROOT / "qa-results" / "qa-harness-server.log"
 
 SUFFIX = "_harness"
 DB_MARKER = "ledgerlite-qa-harness"
+ROLE_MARKER = "ledgerlite-qa-harness-role"
 ADMIN_EMAIL = "qa-admin@example.com"
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 FORBIDDEN_ENV = ("FACTORY_API_KEY", "QA_EVIDENCE_TOKEN")
@@ -55,20 +61,30 @@ class HarnessError(Exception):
 class Target:
     dbname: str
     role: str
-    admin_url: str  # connects to the maintenance database "postgres"
-    base_url: str  # same server, no database chosen yet
+    admin_url: str  # the maintenance database "postgres" on the configured server
+    server: str  # identity of that server, to bind persisted state to it
 
-    def url_for(self, dbname: str, user: str | None = None, password: str | None = None) -> str:
-        kwargs: dict = {"dbname": dbname}
-        if user is not None:
-            kwargs.update(user=user, password=password)
-        return make_conninfo(self.base_url, **kwargs)
+    def url_for(self, password: str) -> str:
+        return make_conninfo(self.admin_url, dbname=self.dbname, user=self.role, password=password)
 
 
-def resolve_target(database_url: str, env: dict[str, str] | None = None) -> Target:
+def _check_local(info: dict[str, str]) -> None:
+    """Reject any connection that libpq could route to a non-local server.
+
+    Omitted settings fall back to PG* environment variables, so those count too.
+    """
+    if info.get("service") or os.environ.get("PGSERVICE"):
+        raise HarnessError("refusing connection services; set host explicitly")
+    for key, env_name in (("host", "PGHOST"), ("hostaddr", "PGHOSTADDR")):
+        value = info.get(key) or os.environ.get(env_name) or ""
+        for item in filter(None, value.split(",")):
+            if item not in LOOPBACK_HOSTS and not item.startswith("/"):
+                raise HarnessError(f"refusing non-local database {key} {item!r}")
+
+
+def resolve_target(database_url: str) -> Target:
     """Derive the isolated target from the configured server URL, or refuse."""
-    env = os.environ if env is None else env
-    present = [name for name in FORBIDDEN_ENV if env.get(name)]
+    present = [name for name in FORBIDDEN_ENV if os.environ.get(name)]
     if present:
         raise HarnessError(f"refusing to run with agent credentials in the environment: {present}")
 
@@ -76,12 +92,7 @@ def resolve_target(database_url: str, env: dict[str, str] | None = None) -> Targ
         info = conninfo_to_dict(database_url)
     except psycopg.ProgrammingError as exc:
         raise HarnessError("unparseable database URL") from exc
-    host = info.get("host") or ""
-    # An empty host or a path means a local unix socket.
-    if host and host not in LOOPBACK_HOSTS and not host.startswith("/"):
-        raise HarnessError(f"refusing non-local database host {host!r}")
-    if info.get("hostaddr") and info["hostaddr"] not in LOOPBACK_HOSTS:
-        raise HarnessError("refusing non-local database hostaddr")
+    _check_local(info)
 
     base = info.get("dbname") or "ledgerlite"
     for suffix in _STRIP_SUFFIXES:
@@ -93,11 +104,17 @@ def resolve_target(database_url: str, env: dict[str, str] | None = None) -> Targ
     for ident in (dbname, role):
         if not _IDENT.match(ident):
             raise HarnessError(f"unsafe database identifier {ident!r}")
-    if not dbname.endswith(SUFFIX):
-        raise HarnessError("target database must end with _harness")
 
-    base_url = make_conninfo(database_url, dbname="postgres")
-    return Target(dbname=dbname, role=role, admin_url=base_url, base_url=base_url)
+    server = "|".join(
+        info.get(key) or os.environ.get(env_name) or ""
+        for key, env_name in (("host", "PGHOST"), ("hostaddr", "PGHOSTADDR"), ("port", "PGPORT"))
+    )
+    return Target(
+        dbname=dbname,
+        role=role,
+        admin_url=make_conninfo(database_url, dbname="postgres"),
+        server=server,
+    )
 
 
 def parse_account_specs(specs: list[str]) -> list[tuple[str, int]]:
@@ -170,9 +187,9 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def http_status(port: int, path: str = "/ui/login") -> int | None:
+def http_status(port: int) -> int | None:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=3) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/ui/login", timeout=3) as response:
             return response.status
     except HTTPError as exc:
         return exc.code
@@ -187,7 +204,7 @@ def start_server(state: dict, settings) -> None:
         "HOME": "/nonexistent",
         "PYTHONDONTWRITEBYTECODE": "1",
         "DATABASE_URL": state["app_url"],
-        "JWT_SECRET": settings.jwt_secret,
+        "JWT_SECRET": state["jwt_secret"],
         "SEED_PASSWORD": settings.seed_password,
     }
     cmd = [
@@ -240,18 +257,31 @@ def _db_state(admin, target: Target) -> dict | None:
     return row
 
 
+def _check_owned(admin, target: Target) -> tuple[dict | None, bool]:
+    """Refuse a same-named database or role that this harness did not create."""
+    existing = _db_state(admin, target)
+    if existing is not None and existing["marker"] != DB_MARKER:
+        raise HarnessError(
+            f"database {target.dbname!r} exists but is not a harness database; refusing"
+        )
+    role = admin.execute(
+        "SELECT shobj_description(oid, 'pg_authid') AS marker FROM pg_roles WHERE rolname = %s",
+        (target.role,),
+    ).fetchone()
+    if role is not None and role["marker"] != ROLE_MARKER:
+        raise HarnessError(f"role {target.role!r} exists but is not a harness role; refusing")
+    return existing, role is not None
+
+
 def ensure_database(target: Target, password: str, reset: bool) -> None:
     with _admin(target) as admin:
-        existing = _db_state(admin, target)
-        if existing is not None and existing["marker"] != DB_MARKER:
-            raise HarnessError(
-                f"database {target.dbname!r} exists but is not a harness database; refusing"
-            )
+        existing, has_role = _check_owned(admin, target)
         role = sql.Identifier(target.role)
-        if not admin.execute(
-            "SELECT 1 FROM pg_roles WHERE rolname = %s", (target.role,)
-        ).fetchone():
+        if not has_role:
             admin.execute(sql.SQL("CREATE ROLE {} LOGIN").format(role))
+            admin.execute(
+                sql.SQL("COMMENT ON ROLE {} IS {}").format(role, sql.Literal(ROLE_MARKER))
+            )
         admin.execute(
             sql.SQL(
                 "ALTER ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE "
@@ -280,16 +310,13 @@ def ensure_database(target: Target, password: str, reset: bool) -> None:
 
 def drop_database(target: Target) -> bool:
     with _admin(target) as admin:
-        existing = _db_state(admin, target)
-        if existing is not None and existing["marker"] != DB_MARKER:
-            raise HarnessError(
-                f"database {target.dbname!r} exists but is not a harness database; refusing"
-            )
+        existing, has_role = _check_owned(admin, target)
         if existing is not None:
             admin.execute(
                 sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(target.dbname))
             )
-        admin.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(target.role)))
+        if has_role:
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(target.role)))
         return existing is not None
 
 
@@ -318,20 +345,10 @@ def outage_active(target: Target) -> bool:
 # --- fixtures -------------------------------------------------------------------------------
 
 
-def balance_of(conn: psycopg.Connection, account_id: int) -> int:
-    return conn.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS b FROM ledger_entries "
-        "WHERE account_id = %s",
-        (account_id,),
-    ).fetchone()["b"]
-
-
 def _system_account(conn: psycopg.Connection) -> int:
     row = conn.execute("SELECT id FROM accounts WHERE is_system").fetchone()
     if row:
         return row["id"]
-    from app.seed import SYSTEM_ACCOUNT_NAME
-
     return conn.execute(
         "INSERT INTO accounts (name, is_system) VALUES (%s, true) RETURNING id",
         (SYSTEM_ACCOUNT_NAME,),
@@ -343,10 +360,15 @@ def set_balance(conn: psycopg.Connection, account_id: int, cents: int) -> None:
 
     Each adjustment is one balanced transfer, so the ledger stays at zero.
     """
-    delta = cents - balance_of(conn, account_id)
+    system_id = _system_account(conn)
+    # Same lock the API takes, so a transfer in flight cannot leave a stale balance read.
+    conn.execute(
+        "SELECT id FROM accounts WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+        ([account_id, system_id],),
+    )
+    delta = cents - account_balance(conn, account_id)
     if delta == 0:
         return
-    system_id = _system_account(conn)
     src, dst = (system_id, account_id) if delta > 0 else (account_id, system_id)
     amount = abs(delta)
     seq = conn.execute(
@@ -410,8 +432,6 @@ def ensure_user(
 
 
 def reset_data(conn: psycopg.Connection, password: str) -> None:
-    from app.seed import seed, seed_admin
-
     conn.execute(
         "TRUNCATE ledger_entries, transfers, transfer_rate_limits, accounts, users "
         "RESTART IDENTITY CASCADE"
@@ -428,10 +448,15 @@ def _app_conn(state: dict) -> psycopg.Connection:
 # --- commands -------------------------------------------------------------------------------
 
 
-def _settings():
-    from app.config import Settings
-
-    return Settings()
+def _bound_state(target: Target) -> dict | None:
+    """Load saved state, refusing it if it belongs to another database or server."""
+    state = load_state()
+    if state and (state.get("dbname") != target.dbname or state.get("server") != target.server):
+        raise HarnessError(
+            "saved harness state belongs to a different database target; "
+            "restore the original DATABASE_URL and run `down`"
+        )
+    return state
 
 
 def _public(state: dict, target: Target) -> dict:
@@ -440,33 +465,33 @@ def _public(state: dict, target: Target) -> dict:
         "base_url": f"http://localhost:{state['port']}",
         "database": target.dbname,
         "outage": outage_active(target),
-        "personas": ["alice@example.com", "bob@example.com", ADMIN_EMAIL],
+        "personas": [*SEED_USERS, ADMIN_EMAIL],
         "password": "SEED_PASSWORD",
     }
 
 
 def cmd_up(target: Target, settings, reset: bool) -> dict:
-    state = load_state()
+    state = _bound_state(target)
     if state and server_alive(state) and not reset:
         return {**_public(state, target), "changed": False}
+    with _admin(target) as admin:
+        _check_owned(admin, target)
     stop_server(state)
     password = secrets.token_hex(24)
     ensure_database(target, password, reset)
     old_port = (state or {}).get("port")
     state = {
         "dbname": target.dbname,
+        "server": target.server,
+        "jwt_secret": secrets.token_hex(32),
         "port": old_port if old_port and _port_free(old_port) else free_port(),
         "nonce": secrets.token_hex(16),
-        "app_url": target.url_for(target.dbname, target.role, password),
+        "app_url": target.url_for(password),
         "pid": None,
     }
     save_state(state)
-    from app.db import apply_schema
-
     with _app_conn(state) as conn:
         apply_schema(conn)
-        from app.seed import seed, seed_admin
-
         seed(conn, settings.seed_password)
         seed_admin(conn, ADMIN_EMAIL, settings.seed_password)
         conn.commit()
@@ -485,28 +510,30 @@ def _port_free(port: int) -> bool:
         return True
 
 
-def _require_state() -> dict:
-    state = load_state()
+def _require_state(target: Target) -> dict:
+    state = _bound_state(target)
     if not state:
         raise HarnessError("harness is not up; run `up`")
     return state
 
 
 def cmd_restart(target: Target, settings) -> dict:
-    state = _require_state()
-    stop_server(state)
+    state = _require_state(target)
     if outage_active(target):
         raise HarnessError("database outage is active; run `outage off` before restart")
+    if not _port_free(state["port"]) and not server_alive(state):
+        raise HarnessError(f"port {state['port']} is in use by another process")
+    stop_server(state)
     state["nonce"] = secrets.token_hex(16)
     state["pid"] = None
-    if not _port_free(state["port"]):
-        raise HarnessError(f"port {state['port']} is in use by another process")
     start_server(state, settings)
     return {**_public(state, target), "changed": True}
 
 
 def cmd_down(target: Target) -> dict:
-    state = load_state()
+    state = _bound_state(target)
+    with _admin(target) as admin:
+        _check_owned(admin, target)
     stopped = stop_server(state)
     dropped = drop_database(target)
     STATE_PATH.unlink(missing_ok=True)
@@ -535,7 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> dict:
-    settings = _settings()
+    settings = get_settings()
     target = resolve_target(settings.database_url)
     cmd = args.command
     if cmd == "up":
@@ -543,16 +570,16 @@ def run(args: argparse.Namespace) -> dict:
     if cmd == "down":
         return cmd_down(target)
     if cmd == "status":
-        state = load_state()
+        state = _bound_state(target)
         return _public(state, target) if state else {"running": False}
     if cmd == "restart":
         return cmd_restart(target, settings)
     if cmd == "outage":
         if args.mode != "status":
-            _require_state()
+            _require_state(target)
             set_outage(target, args.mode == "on")
         return {"outage": outage_active(target)}
-    state = _require_state()
+    state = _require_state(target)
     if outage_active(target):
         raise HarnessError("database outage is active; run `outage off` first")
     with _app_conn(state) as conn:
@@ -563,8 +590,8 @@ def run(args: argparse.Namespace) -> dict:
         return ensure_user(conn, args.email, settings.seed_password, accounts, args.admin)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def main() -> int:
+    args = build_parser().parse_args()
     try:
         result = run(args)
     except HarnessError as exc:

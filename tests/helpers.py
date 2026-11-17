@@ -3,6 +3,8 @@ import re
 import psycopg
 from fastapi.testclient import TestClient
 
+from app.ledger import account_balance
+
 TEST_PASSWORD = "test-password"
 TRANSFER_FAILURE_MESSAGE = (
     "We could not complete this transfer. Check the recipient and your balance."
@@ -18,11 +20,7 @@ def api_login(client: TestClient, user: str, password: str = TEST_PASSWORD) -> d
 
 
 def balance(db: psycopg.Connection, account_id: int) -> int:
-    return db.execute(
-        "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS b FROM ledger_entries "
-        "WHERE account_id = %s",
-        (account_id,),
-    ).fetchone()["b"]
+    return account_balance(db, account_id)
 
 
 def ledger_total(db: psycopg.Connection) -> int:
