@@ -183,7 +183,7 @@ def transfer_page(
 def transfer_submit(
     request: Request,
     from_account_id: str = Form(""),
-    to_account_id: str = Form(""),
+    to_email: str = Form(""),
     amount: str = Form(""),
     idempotency_key: str = Form(""),
     csrf_token: str = Form(""),
@@ -195,18 +195,19 @@ def transfer_submit(
     status_code = 200
     ok = False
     message = ""
-    source_id, destination_id = parse_id(from_account_id), parse_id(to_account_id)
+    source_id = parse_id(from_account_id)
     cents = parse_amount_cents(amount)
     key = idempotency_key.strip()
 
-    if source_id is None or destination_id is None:
-        status_code, message = 422, "Choose valid source and destination account ids."
+    if source_id is None:
+        status_code, message = 422, "Choose a valid source account."
     elif cents is None:
         status_code, message = 422, "Enter a positive amount with at most two decimals."
     elif not 0 < len(key) <= 255:
         status_code, message = 422, "Missing idempotency key. Reload the form."
     else:
         try:
+            destination_id = ledger.resolve_recipient_account(pool, user_id=user.id, email=to_email)
             result = ledger.execute_transfer(
                 pool,
                 user_id=user.id,

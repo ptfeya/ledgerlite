@@ -71,7 +71,7 @@ def test_system_account_cannot_be_a_source_via_the_html_form(db, client, ids):
         "/ui/transfer",
         data={
             "from_account_id": str(ids["system"]),
-            "to_account_id": str(ids["alice"]["Checking"]),
+            "to_email": "bob@example.com",
             "amount": "10.00",
             "idempotency_key": "form-sys",
             "csrf_token": token,
