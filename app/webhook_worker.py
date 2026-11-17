@@ -34,7 +34,7 @@ log = logging.getLogger("ledgerlite.webhook_worker")
 
 def make_worker_pool(database_url: str) -> ConnectionPool:
     """One connection: the worker handles one event per transaction."""
-    return make_pool(database_url, min_size=1, max_size=1, application_name=APPLICATION_NAME)
+    return make_pool(database_url, max_size=1, application_name=APPLICATION_NAME)
 
 
 def _log_result(result: webhooks.DeliveryResult) -> None:
