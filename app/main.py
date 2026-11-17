@@ -23,7 +23,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         pool.close()
 
 
-app = FastAPI(title="LedgerLite", lifespan=lifespan)
+app = FastAPI(
+    title="LedgerLite",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),

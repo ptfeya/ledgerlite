@@ -33,7 +33,7 @@ If port 5432 is taken, change `POSTGRES_PORT` **and** the port in `DATABASE_URL`
 uv run uvicorn app.main:app --reload
 ```
 
-Open <http://localhost:8000>. Interactive API docs are at `/docs`.
+Open <http://localhost:8000>. Interactive API docs (`/docs`, `/redoc`, `/openapi.json`) are disabled; the API is described in the [API](#api) section below.
 
 Seeded users (password is `SEED_PASSWORD` from `.env`, default `ledgerlite-dev`; local development only):
 
