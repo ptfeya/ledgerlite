@@ -1,7 +1,15 @@
 import psycopg
 import pytest
 
-from tests.helpers import balance, count, csrf_from_html, ledger_total, page_login, post_transfer
+from tests.helpers import (
+    TRANSFER_FAILURE_MESSAGE,
+    balance,
+    count,
+    csrf_from_html,
+    ledger_total,
+    page_login,
+    post_transfer,
+)
 
 
 def test_system_account_has_no_owner_and_no_login(db, client):
@@ -62,10 +70,14 @@ def test_system_account_is_invisible_through_the_api(client, alice, bob, ids):
         assert client.get(f"/accounts/{ids['system']}/entries", headers=headers).status_code == 404
 
 
-def test_system_account_cannot_be_a_source_via_the_html_form(db, client, ids):
+@pytest.mark.parametrize("htmx", [False, True])
+def test_system_account_cannot_be_a_source_via_the_html_form(db, client, ids, htmx):
     assert page_login(client, "alice").status_code == 303
     token = csrf_from_html(client.get("/ui/transfer").text)
     entries_before = count(db, "ledger_entries")
+    transfers_before = count(db, "transfers")
+    system_before = balance(db, ids["system"])
+    recipient_before = balance(db, ids["bob"]["Checking"])
 
     response = client.post(
         "/ui/transfer",
@@ -76,7 +88,13 @@ def test_system_account_cannot_be_a_source_via_the_html_form(db, client, ids):
             "idempotency_key": "form-sys",
             "csrf_token": token,
         },
+        headers={"HX-Request": "true"} if htmx else {},
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 422
+    assert TRANSFER_FAILURE_MESSAGE in response.text
     assert count(db, "ledger_entries") == entries_before
+    assert count(db, "transfers") == transfers_before
+    assert balance(db, ids["system"]) == system_before
+    assert balance(db, ids["bob"]["Checking"]) == recipient_before
+    assert ledger_total(db) == 0

@@ -4,11 +4,14 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from psycopg import InterfaceError, OperationalError
+from psycopg_pool import PoolTimeout
 
 from app import ledger
 from app.auth import CurrentUser, get_page_user, get_pool
 from app.routes import pages
 from app.security import session_csrf_token
+from tests.helpers import TRANSFER_FAILURE_MESSAGE
 
 
 @pytest.fixture
@@ -57,7 +60,14 @@ def test_lookup_rejects_self(recipient_pool):
 
 
 @pytest.fixture
-def isolated_transfer_client(monkeypatch, recipient_pool):
+def transfer_throttle(monkeypatch):
+    throttle = Mock(return_value=0)
+    monkeypatch.setattr(pages, "transfer_retry_after", throttle)
+    return throttle
+
+
+@pytest.fixture
+def isolated_transfer_client(monkeypatch, recipient_pool, transfer_throttle):
     # Exercise the real HTML route without a database or the app's pool lifespan.
     app = FastAPI()
     app.include_router(pages.router)
@@ -81,7 +91,9 @@ def isolated_transfer_client(monkeypatch, recipient_pool):
 
 
 @pytest.mark.parametrize("htmx", [False, True])
-def test_email_route_delegates_money_movement(isolated_transfer_client, recipient_pool, htmx):
+def test_email_route_delegates_money_movement(
+    isolated_transfer_client, recipient_pool, transfer_throttle, htmx
+):
     client, data, execute = isolated_transfer_client
     response = client.post(
         "/ui/transfer", data=data, headers={"HX-Request": "true"} if htmx else {}
@@ -89,6 +101,7 @@ def test_email_route_delegates_money_movement(isolated_transfer_client, recipien
     assert response.status_code == 200
     assert "Sent $12.34." in response.text
     assert ("<html" not in response.text) == htmx
+    transfer_throttle.assert_called_once_with(recipient_pool, user_id=1)
     execute.assert_called_once_with(
         recipient_pool,
         user_id=1,
@@ -108,7 +121,7 @@ def test_email_route_renders_generic_error(isolated_transfer_client, recipient_p
         "/ui/transfer", data=data, headers={"HX-Request": "true"} if htmx else {}
     )
     assert response.status_code == 422
-    assert '<p class="error" role="status">Recipient not found.</p>' in response.text
+    assert f'<p class="error" role="status">{TRANSFER_FAILURE_MESSAGE}</p>' in response.text
     assert ("<html" not in response.text) == htmx
     execute.assert_not_called()
 
@@ -125,7 +138,7 @@ def test_isolated_form_uses_recipient_email(isolated_transfer_client):
 @pytest.mark.parametrize("htmx", [False, True])
 @pytest.mark.parametrize("token", [None, "", "not-the-token"])
 def test_isolated_email_transfer_requires_csrf(
-    isolated_transfer_client, recipient_pool, htmx, token
+    isolated_transfer_client, recipient_pool, transfer_throttle, htmx, token
 ):
     client, data, execute = isolated_transfer_client
     if token is None:
@@ -136,6 +149,7 @@ def test_isolated_email_transfer_requires_csrf(
         "/ui/transfer", data=data, headers={"HX-Request": "true"} if htmx else {}
     )
     assert response.status_code == 403
+    transfer_throttle.assert_not_called()
     recipient_pool.connection.assert_not_called()
     execute.assert_not_called()
 
@@ -148,6 +162,97 @@ def test_isolated_email_transfer_rejects_legacy_destination(
     data["to_account_id"] = "4"
     response = client.post("/ui/transfer", data=data)
     assert response.status_code == 422
-    assert "Recipient not found." in response.text
+    assert TRANSFER_FAILURE_MESSAGE in response.text
+    recipient_pool.connection.assert_not_called()
+    execute.assert_not_called()
+
+
+@pytest.mark.parametrize("htmx", [False, True])
+@pytest.mark.parametrize(
+    "error",
+    [
+        ledger.InsufficientFunds("insufficient funds"),
+        ledger.InvalidTransfer("currency mismatch"),
+        ledger.InvalidTransfer("cannot send to yourself"),
+        ledger.AccountNotFound("source account not found"),
+        ledger.AccountNotFound("destination account not found"),
+        ledger.IdempotencyConflict("Idempotency-Key was already used with a different request"),
+    ],
+)
+def test_business_errors_match_unknown_recipient(
+    isolated_transfer_client, recipient_pool, htmx, error
+):
+    client, data, execute = isolated_transfer_client
+    headers = {"HX-Request": "true"} if htmx else {}
+    execute.side_effect = error
+    known = client.post("/ui/transfer", data=data, headers=headers)
+    execute.assert_called_once()
+    conn = recipient_pool.connection.return_value.__enter__.return_value
+    conn.execute.return_value.fetchall.return_value = []
+    unknown = client.post(
+        "/ui/transfer", data={**data, "to_email": "unknown@example.com"}, headers=headers
+    )
+    assert known.status_code == unknown.status_code == 422
+    assert known.content == unknown.content
+    assert known.headers == unknown.headers
+    assert f'<p class="error" role="status">{TRANSFER_FAILURE_MESSAGE}</p>' in known.text
+    execute.assert_called_once()
+
+
+@pytest.mark.parametrize("htmx", [False, True])
+@pytest.mark.parametrize("email", ["bob@example.com", "unknown@example.com", "malformed", ""])
+def test_throttle_precedes_recipient_lookup(
+    isolated_transfer_client, recipient_pool, transfer_throttle, htmx, email
+):
+    client, data, execute = isolated_transfer_client
+    transfer_throttle.return_value = 42
+    response = client.post(
+        "/ui/transfer",
+        data={**data, "to_email": email},
+        headers={"HX-Request": "true"} if htmx else {},
+    )
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "42"
+    assert "Too many transfer attempts. Please try again shortly." in response.text
+    assert ("<html" not in response.text) == htmx
+    assert "form-1" in response.text
+    transfer_throttle.assert_called_once_with(recipient_pool, user_id=1)
+    recipient_pool.connection.assert_not_called()
+    execute.assert_not_called()
+
+
+@pytest.mark.parametrize("htmx", [False, True])
+@pytest.mark.parametrize("error_type", [OperationalError, InterfaceError, PoolTimeout])
+def test_throttle_database_failure_is_safe(
+    isolated_transfer_client, recipient_pool, transfer_throttle, htmx, error_type
+):
+    client, data, execute = isolated_transfer_client
+    transfer_throttle.side_effect = error_type("private database details")
+    response = client.post(
+        "/ui/transfer", data=data, headers={"HX-Request": "true"} if htmx else {}
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Service temporarily unavailable"}
+    assert "private database details" not in response.text
+    recipient_pool.connection.assert_not_called()
+    execute.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("from_account_id", "bad", "Choose a valid source account."),
+        ("amount", "bad", "Enter a positive amount with at most two decimals."),
+        ("idempotency_key", "", "Missing idempotency key. Reload the form."),
+    ],
+)
+def test_invalid_forms_count_without_looking_up_recipients(
+    isolated_transfer_client, recipient_pool, transfer_throttle, field, value, message
+):
+    client, data, execute = isolated_transfer_client
+    response = client.post("/ui/transfer", data={**data, field: value})
+    assert response.status_code == 422
+    assert message in response.text
+    transfer_throttle.assert_called_once_with(recipient_pool, user_id=1)
     recipient_pool.connection.assert_not_called()
     execute.assert_not_called()
