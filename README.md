@@ -122,6 +122,8 @@ curl -s -X POST localhost:8000/reconcile -H "Authorization: Bearer $ADMIN_TOKEN"
 | `POST /transfers`             | Moves money. Requires an `Idempotency-Key` header. See below.                              |
 | `GET /accounts/{id}/entries`  | Ledger entries, newest first (`?limit=`, max 500). Someone else's account returns 404.     |
 | `POST /reconcile`             | `{"status":"ok"}` or `{"status":"imbalance","imbalance_cents":N}`. Requires an admin token; non-admins get 403, missing or invalid tokens get 401. |
+| `GET /admin/webhooks/dead-letter` | Dead-letter webhook events, oldest failure first: id, type, transfer id, attempts, last HTTP status or error label, timestamps. At most 100 per response (`?limit=` 1-100); bodies are not returned. Admin token only, as for reconcile. |
+| `POST /admin/webhooks/dead-letter/{event_id}/replay` | Moves that event back to the outbox, due now, with zero attempts and its original id and body. Never moves money. Returns the queued event; 404 if it is not in the dead letter (unknown, queued, delivered or already replayed), 409 if the outbox already holds an event for its transfer. Admin token only. |
 
 Account ids in the seeded data are `1` (system funding), `2`/`3` (Alice Checking/Savings), `4`/`5` (Bob Checking/Savings).
 

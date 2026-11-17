@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 TRANSFER_COMPLETED = "transfer.completed"
 # Recorded delivery outcomes per cycle before an event is dead-lettered. The
@@ -347,3 +348,80 @@ def deliver_next(
         error=result.error,
         next_attempt_at=next_attempt_at,
     )
+
+
+# --- Dead-letter administration --------------------------------------------------
+# Used by the admin API. Only queue rows change; transfers and the ledger never do.
+
+# Hard cap on one listing response, whatever limit the caller asks for.
+DEAD_LETTER_LIST_MAX = 100
+
+DEAD_LETTER_COLUMNS = (
+    "event_id, event_type, transfer_id, attempts, last_status_code, last_error, "
+    "created_at, failed_at"
+)
+
+
+class ReplayNotFound(Exception):
+    """No dead-letter event has that id (unknown, still queued, or already replayed)."""
+
+
+class ReplayConflict(Exception):
+    """The outbox already holds an event with that identity, so nothing was moved."""
+
+
+def list_dead_letters(pool: ConnectionPool, limit: int = DEAD_LETTER_LIST_MAX) -> list[dict]:
+    """Oldest failures first. Bodies are not returned, only delivery metadata."""
+    limit = max(1, min(int(limit), DEAD_LETTER_LIST_MAX))
+    with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        return cur.execute(
+            f"SELECT {DEAD_LETTER_COLUMNS} FROM webhook_dead_letter "  # noqa: S608
+            "ORDER BY failed_at, event_id LIMIT %s",
+            (limit,),
+        ).fetchall()
+
+
+def _requeue(cur: psycopg.Cursor, event: dict, at: datetime) -> dict:
+    return cur.execute(
+        "INSERT INTO webhook_outbox (event_id, event_type, transfer_id, body, status, "
+        "attempts, next_attempt_at, created_at, updated_at) "
+        "VALUES (%s, %s, %s, %s, 'pending', 0, %s, %s, %s) "
+        "RETURNING event_id, transfer_id, status, attempts, next_attempt_at",
+        (
+            event["event_id"],
+            event["event_type"],
+            event["transfer_id"],
+            event["body"],
+            at,
+            event["created_at"],
+            at,
+        ),
+    ).fetchone()
+
+
+def replay_dead_letter(
+    pool: ConnectionPool, event_id: UUID, *, clock: Callable[[], datetime] = utc_now
+) -> dict:
+    """Move one dead-letter event back to the outbox, due now, with a fresh
+    attempt budget and its original id, body and timestamps.
+
+    The DELETE takes the dead row's lock, so of two concurrent replays only the
+    first finds the row; the other waits, then finds nothing and raises
+    ReplayNotFound. Any failure rolls the move back, leaving the dead row as it was.
+    """
+    try:
+        with (
+            pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor(row_factory=dict_row) as cur,
+        ):
+            event = cur.execute(
+                "DELETE FROM webhook_dead_letter WHERE event_id = %s "
+                "RETURNING event_id, event_type, transfer_id, body, created_at",
+                (event_id,),
+            ).fetchone()
+            if event is None:
+                raise ReplayNotFound
+            return _requeue(cur, event, clock())
+    except psycopg.errors.UniqueViolation:
+        raise ReplayConflict from None
