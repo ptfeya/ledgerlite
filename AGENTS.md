@@ -28,6 +28,7 @@ Tests use a separate `<POSTGRES_DB>_test` database and never touch dev data.
 - `app/seed.py`, `app/config.py`, `app/db.py`, `app/main.py`: seeding, settings, pool, app setup
 - `app/templates/`, `app/static/`: Jinja2 templates, CSS, vendored htmx
 - `db/schema.sql`: tables, constraints, triggers (idempotent, safe to re-apply)
+- `tools/qa_harness.py`: isolated fixture/outage/restart harness for local QA (usage in `tools/README.md`)
 - `tests/`: pytest suite; shared helpers in `tests/helpers.py`
 
 ## Rules
@@ -38,6 +39,7 @@ Tests use a separate `<POSTGRES_DB>_test` database and never touch dev data.
 - The system funding account has no owner and must never be a transfer source or destination.
 - Every form POST needs a CSRF token, including login and logout.
 - The JSON API accepts bearer tokens only. Never accept the session cookie there.
+- The QA harness only touches its own `<POSTGRES_DB>_harness` database and refuses anything else. Never point it at dev, test or QA-server data.
 - Never commit `.env`. Use `.env.example` for new settings.
 - Add or update tests with every change.
 - Never delete, skip or weaken a test to make it pass. Fix the code or ask.
