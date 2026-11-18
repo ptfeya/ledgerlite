@@ -3,7 +3,8 @@
     "factory-plugins": {
       "source": {
         "source": "github",
-        "repo": "Factory-AI/factory-plugins"
+        "repo": "Factory-AI/factory-plugins",
+        "sha": "e63e519a736140c86f37be95a529a0c44dc9a96e"
       }
     }
   },

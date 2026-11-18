@@ -1,0 +1,8 @@
+{
+  "name": "ledgerlite-qa-tools",
+  "private": true,
+  "description": "Pinned browser driver for CI QA. Installed by qa-tools.sh with npm ci --ignore-scripts.",
+  "dependencies": {
+    "agent-browser": "0.43.0"
+  }
+}
