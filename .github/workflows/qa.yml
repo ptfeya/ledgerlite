@@ -116,6 +116,29 @@ jobs:
         run: |
           curl -fsSL https://app.factory.ai/cli | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Pinned browser tooling, installed in this trusted step (no secrets in its environment):
+      # agent-browser 0.43.0 from a lockfile with integrity hashes (npm ci --ignore-scripts),
+      # a sha256-checked Chrome for Testing build, and droid-control at a fixed commit. All pins
+      # live in qa-tools.sh, tools/package.json and .factory/settings.json. The script also exports
+      # the PATH and browser location for later steps. A failed install does not fail the job; the preflight reports it as
+      # BLOCKED. This script comes from the base branch (the instruction copy above).
+      # Until the tooling script exists on the base branch (as with the first PR that adds it),
+      # skip the install; the preflight step then reports web QA as BLOCKED.
+      - name: Install QA browser tooling
+        id: tools
+        if: steps.skills.outputs.present == 'true'
+        run: |
+          T=.factory/skills/qa/scripts/qa-tools.sh
+          if [ ! -f "base/$T" ] || [ ! -f "$T" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::QA browser tooling is not on the base branch yet; skipping install"
+            exit 0
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+          # Ubuntu 24.04 blocks unprivileged user namespaces, which Chrome's sandbox needs.
+          # Re-enable them instead of running Chrome with --no-sandbox.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          "$T" install
       # The PR's application code runs here, as a different OS user with a scrubbed
       # environment, in a step that has no secrets. It starts before (and outlives) the
       # step that holds FACTORY_API_KEY. That user cannot read the agent's process
@@ -139,6 +162,22 @@ jobs:
           done
           cat "$RUNNER_TEMP/qa-server.log"
           exit 1
+      # Proves the browser stack works against the live QA server before the agent starts.
+      # It never fails the job: a problem is written to qa-results/preflight.txt as
+      # "QA_PREFLIGHT: BLOCKED" with reasons, which the agent must report (qa skill, Step 4).
+      - name: QA browser preflight
+        if: steps.skills.outputs.present == 'true'
+        env:
+          QA_NEED_FFMPEG: ${{ steps.cfg.outputs.video == 'true' || steps.cfg.outputs.compose == 'true' }}
+          QA_NEED_IMAGEMAGICK: ${{ steps.cfg.outputs.imagemagick }}
+        run: |
+          if [ "${{ steps.tools.outputs.present }}" = "true" ]; then
+            .factory/skills/qa/scripts/qa-tools.sh preflight
+          else
+            mkdir -p qa-results
+            printf 'QA_PREFLIGHT: BLOCKED\nScope: all web (browser) flows. API flows (curl) are not affected.\nBLOCKED tooling: tooling not yet on base branch\n' > qa-results/preflight.txt
+            cat qa-results/preflight.txt
+          fi
       - name: Run QA
         if: steps.skills.outputs.present == 'true'
         continue-on-error: true
@@ -155,7 +194,7 @@ jobs:
           EXTRA=""
           [ "$VIDEO" = "true" ] && EXTRA="$EXTRA Use droid-control Capture and upload video evidence per the qa skill's Evidence Capture rules."
           [ "$COMPOSE" = "true" ] && EXTRA="$EXTRA Run droid-control Compose for each captured flow before upload."
-          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. A QA application server is already running. Check it only with env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent .factory/skills/qa/scripts/qa-server.sh verify (and url); never start another server. Never execute anything from this checkout (python, .venv, uv, app code, scripts); read files and talk to the server over HTTP only. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
+          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill. The diff base is $DIFF_BASE. Read qa-results/preflight.txt first: if it says QA_PREFLIGHT: BLOCKED, report every web flow BLOCKED with its reasons (qa skill Step 4) and still run API flows. A QA application server is already running. Check it only with env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent .factory/skills/qa/scripts/qa-server.sh verify (and url); never start another server. Never execute anything from this checkout (python, .venv, uv, app code, scripts); read files and talk to the server over HTTP only. Write the final report to qa-results/report.md.$EXTRA" 2>&1 | tee qa-output.txt
       - name: Stop QA application server
         if: always()
         run: sudo pkill -u qa-app || true
