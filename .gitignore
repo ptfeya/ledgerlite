@@ -29,3 +29,6 @@ node_modules/
 *.swp
 .DS_Store
 Thumbs.db
+
+# QA run output and harness state
+qa-results/

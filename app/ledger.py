@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+import psycopg
 from psycopg_pool import ConnectionPool
 
 from app import webhooks
@@ -222,3 +223,11 @@ def ledger_imbalance(pool: ConnectionPool) -> int:
         return conn.execute(
             "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS total FROM ledger_entries"
         ).fetchone()["total"]
+
+
+def account_balance(conn: psycopg.Connection, account_id: int) -> int:
+    return conn.execute(
+        "SELECT COALESCE(SUM(amount_cents), 0)::bigint AS b FROM ledger_entries "
+        "WHERE account_id = %s",
+        (account_id,),
+    ).fetchone()["b"]
