@@ -7,6 +7,9 @@ from uuid import UUID
 import psycopg
 from psycopg_pool import ConnectionPool
 
+from app import webhooks
+from app.config import get_settings
+
 MAX_AMOUNT_CENTS = 10**12
 
 
@@ -89,6 +92,9 @@ def execute_transfer(
     transfers), and the balance check runs under the source lock, so concurrent
     transfers cannot overdraw. A repeated (user, key) returns the stored
     transfer before any balance check, so replays never re-run business rules.
+
+    With webhooks enabled, a new transfer also queues one transfer.completed
+    event in the same transaction. Replays never queue (or reset) an event.
     """
     if not 0 < amount_cents <= MAX_AMOUNT_CENTS:
         raise InvalidTransfer("amount must be a positive number of cents")
@@ -96,6 +102,7 @@ def execute_transfer(
         raise InvalidTransfer("source and destination must differ")
 
     request_hash = _request_hash(from_account_id, to_account_id, amount_cents)
+    enqueue_webhook = get_settings().webhooks_enabled
 
     with pool.connection() as conn:
         locked = conn.execute(
@@ -163,6 +170,14 @@ def execute_transfer(
                 amount_cents,
             ),
         )
+        if enqueue_webhook:
+            webhooks.enqueue_transfer_completed(
+                conn,
+                transfer_id=created["id"],
+                amount_cents=amount_cents,
+                currency=source["currency"],
+                created_at=created["created_at"],
+            )
 
     return TransferResult(
         id=created["id"],

@@ -88,3 +88,46 @@ DROP TRIGGER IF EXISTS ledger_entries_append_only ON ledger_entries;
 CREATE TRIGGER ledger_entries_append_only
     BEFORE UPDATE OR DELETE ON ledger_entries
     FOR EACH ROW EXECUTE FUNCTION forbid_ledger_mutation();
+
+-- Transactional outbox for outbound webhooks. An event row is written in the
+-- same transaction as the transfer it describes, so it exists exactly when the
+-- money moved. The body is the exact JSON sent on every attempt and replay.
+-- Delivered rows are kept; failed events move to webhook_dead_letter.
+CREATE TABLE IF NOT EXISTS webhook_outbox (
+    event_id         uuid PRIMARY KEY,
+    event_type       text NOT NULL CHECK (event_type IN ('transfer.completed')),
+    transfer_id      uuid NOT NULL REFERENCES transfers (id),
+    body             text NOT NULL CHECK (body IS JSON OBJECT),
+    status           text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered')),
+    -- Recorded delivery outcomes in the current cycle (six at most).
+    attempts         integer NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 6),
+    next_attempt_at  timestamptz NOT NULL DEFAULT now(),
+    -- Only a numeric HTTP status or a short sanitized classification, never raw
+    -- responses, URLs or secrets.
+    last_status_code integer CHECK (last_status_code BETWEEN 100 AND 599),
+    last_error       text CHECK (char_length(last_error) <= 100),
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS webhook_outbox_transfer_event_uq
+    ON webhook_outbox (transfer_id, event_type);
+CREATE INDEX IF NOT EXISTS webhook_outbox_due_idx
+    ON webhook_outbox (next_attempt_at, event_id) WHERE status = 'pending';
+
+-- Events that exhausted their attempts or got a terminal response. A row lives
+-- in exactly one of the two tables; moves between them are single transactions.
+CREATE TABLE IF NOT EXISTS webhook_dead_letter (
+    event_id         uuid PRIMARY KEY,
+    event_type       text NOT NULL CHECK (event_type IN ('transfer.completed')),
+    transfer_id      uuid NOT NULL REFERENCES transfers (id),
+    body             text NOT NULL CHECK (body IS JSON OBJECT),
+    attempts         integer NOT NULL CHECK (attempts BETWEEN 1 AND 6),
+    last_status_code integer CHECK (last_status_code BETWEEN 100 AND 599),
+    last_error       text CHECK (char_length(last_error) <= 100),
+    created_at       timestamptz NOT NULL,
+    failed_at        timestamptz NOT NULL DEFAULT now(),
+    CHECK (last_status_code IS NOT NULL OR last_error IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS webhook_dead_letter_transfer_event_uq
+    ON webhook_dead_letter (transfer_id, event_type);
+CREATE INDEX IF NOT EXISTS webhook_dead_letter_failed_idx
+    ON webhook_dead_letter (failed_at, event_id);

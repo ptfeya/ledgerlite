@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field
 
-from app import ledger
+from app import ledger, webhooks
 from app.auth import (
     AuthenticationUnavailable,
     CurrentUser,
@@ -125,3 +125,45 @@ def reconcile(
     if imbalance == 0:
         return {"status": "ok"}
     return {"status": "imbalance", "imbalance_cents": imbalance}
+
+
+class DeadLetterOut(BaseModel):
+    event_id: UUID
+    event_type: str
+    transfer_id: UUID
+    attempts: int
+    last_status_code: int | None
+    last_error: str | None
+    created_at: datetime
+    failed_at: datetime
+
+
+class ReplayOut(BaseModel):
+    event_id: UUID
+    transfer_id: UUID
+    status: str
+    attempts: int
+    next_attempt_at: datetime
+
+
+@router.get("/admin/webhooks/dead-letter", response_model=list[DeadLetterOut])
+def dead_letter_events(
+    limit: int = Query(webhooks.DEAD_LETTER_LIST_MAX, ge=1, le=webhooks.DEAD_LETTER_LIST_MAX),
+    _: CurrentUser = Depends(get_api_admin),
+    pool: ConnectionPool = Depends(get_pool),
+) -> list[dict]:
+    return webhooks.list_dead_letters(pool, limit)
+
+
+@router.post("/admin/webhooks/dead-letter/{event_id}/replay", response_model=ReplayOut)
+def replay_dead_letter_event(
+    event_id: UUID,
+    _: CurrentUser = Depends(get_api_admin),
+    pool: ConnectionPool = Depends(get_pool),
+) -> dict:
+    try:
+        return webhooks.replay_dead_letter(pool, event_id)
+    except webhooks.ReplayNotFound as exc:
+        raise HTTPException(404, "Dead-letter event not found") from exc
+    except webhooks.ReplayConflict as exc:
+        raise HTTPException(409, "An event for this transfer is already queued") from exc

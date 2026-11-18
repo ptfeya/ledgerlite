@@ -2,6 +2,10 @@ import os
 
 # Must be set before the app reads settings. Real env vars win over .env.
 os.environ.setdefault("JWT_SECRET", "test-only-secret-not-for-production")
+# Never inherit a developer's webhook destination; tests opt in per case. Empty
+# environment values also override anything set in .env.
+os.environ["WEBHOOK_URL"] = ""
+os.environ["WEBHOOK_SIGNING_SECRET"] = ""
 
 import psycopg  # noqa: E402
 import pytest  # noqa: E402
@@ -13,7 +17,13 @@ from psycopg.rows import dict_row  # noqa: E402
 from app.config import Settings, get_settings  # noqa: E402
 from app.db import apply_schema, make_pool  # noqa: E402
 from app.seed import seed, seed_admin  # noqa: E402
-from tests.helpers import TEST_PASSWORD, api_login  # noqa: E402
+from tests.helpers import (  # noqa: E402
+    TEST_PASSWORD,
+    TEST_WEBHOOK_SECRET,
+    TEST_WEBHOOK_URL,
+    api_login,
+)
+from tests.webhook_receiver import Receiver  # noqa: E402
 
 # Tests run against a throwaway "<db>_test" database on the same server, never
 # against the development database.
@@ -68,6 +78,36 @@ def client():
     # "localhost" so cookies are not marked Secure and are sent over plain http.
     with TestClient(app, base_url="http://localhost") as test_client:
         yield test_client
+
+
+@pytest.fixture
+def webhook_config(monkeypatch):
+    """Reconfigure webhooks for one test, as a process restart would.
+
+    Pass None to remove a variable from the environment entirely.
+    """
+
+    def configure(
+        url: str | None = TEST_WEBHOOK_URL, secret: str | None = TEST_WEBHOOK_SECRET
+    ) -> None:
+        for name, value in (("WEBHOOK_URL", url), ("WEBHOOK_SIGNING_SECRET", secret)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        get_settings.cache_clear()
+
+    yield configure
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def receiver():
+    """A real HTTP receiver on 127.0.0.1:8101, stopped even when the test fails."""
+    server = Receiver()
+    server.start()
+    yield server
+    server.stop()
 
 
 @pytest.fixture
