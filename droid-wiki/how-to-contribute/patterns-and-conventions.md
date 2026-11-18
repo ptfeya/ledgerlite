@@ -8,15 +8,19 @@ The rules in `AGENTS.md` protect money movement and authentication boundaries. M
 - Send ordinary transfers through `execute_transfer` in `app/ledger.py`. Routes must not insert ledger entries.
 - Keep the debit, credit, and transfer row in one transaction. `pool.connection()` in `app/ledger.py` commits on success and rolls back on exceptions.
 - Lock both accounts in ascending ID order before checking the source balance. Preserve that ordering for all cooperating transfer writers.
-- Reject ownerless system funding accounts as transfer endpoints. Direct balanced funding writes in `app/seed.py` are a seed operation, not a pattern for routes.
+- Reject ownerless system funding accounts as transfer endpoints. Direct balanced funding writes in `app/seed.py` and isolated fixtures in `tools/qa_harness.py` are bootstrap/test operations, not a pattern for routes.
 
 The deferred balance trigger in `db/schema.sql` runs at commit, so a successful insert statement alone does not prove the transaction will commit. Preserve tests that inspect committed state and concurrent outcomes. See [Transfers](../features/transfers.md).
+
+`account_balance` in `app/ledger.py` reads a derived balance on an existing connection; `tests/helpers.py` and `tools/qa_harness.py` share it. Callers that adjust a balance must lock the affected account rows before reading it. Harness fixtures lock the complete account batch in ascending ID order and then add balanced adjustments (`tests/test_qa_harness.py`). Keep this local-only exception confined to the [QA harness](../features/qa-harness.md), whose target guards must never be bypassed.
 
 ## Input and errors
 
 `app/routes/api.py` uses Pydantic request/response models and bounded headers/query parameters. `app/routes/pages.py` parses form strings explicitly, then renders full HTML or htmx fragments. Both call the same ledger functions instead of copying business rules.
 
-`TransferError` subclasses in `app/ledger.py` define expected transfer failures. Account-not-found errors map to 404; invalid input, insufficient funds, and idempotency conflicts map to 422. Do not substitute a different response code without updating callers and tests.
+`TransferError` subclasses in `app/ledger.py` define expected transfer failures. The JSON API maps account-not-found errors to 404 and other business errors to 422 (`app/routes/api.py`). The HTML route deliberately maps every caught business error to the same generic 422 message: “We could not complete this transfer. Check the recipient and your balance.” Do not expose the exception text or API status distinctions in browser responses (`app/routes/pages.py`, `tests/test_recipient_lookup.py`, `tests/test_transfer_errors.py`). Local form-validation errors remain specific.
+
+Record UI attempts only after CSRF validation, before recipient lookup or money movement. Keep the `transfer_retry_after` upsert in `app/rate_limits.py` in a separate committed transaction so failures and replays count too. Preserve the per-user fixed window across sessions/workers, `429` plus `Retry-After`, and the submitted key on blocked attempts. This limiter does not apply to JSON transfers or login (`app/routes/pages.py`, `tests/test_transfer_rate_limits.py`).
 
 `authenticate` in `app/auth.py` normalizes email and handles database/pool failures with a generic application error. Its log includes only the exception class, not the exception message or traceback. Preserve indistinguishable responses for unknown credentials and ambiguous/missing recipients (`app/auth.py`, `app/ledger.py`).
 
@@ -35,6 +39,12 @@ Every form POST needs CSRF, including login and logout. Reuse `require_csrf`, `r
 Use `%s` query parameters for values, as in `app/ledger.py`. Use identifier composition for dynamic identifiers, as in `tests/conftest.py`. Frozen dataclasses carry request user context and transfer results in `app/auth.py` and `app/ledger.py`.
 
 `db/schema.sql` is idempotent and is applied by seed/tests. Schema edits must preserve repeated application and existing-user behavior; there is no separate migration framework (`app/db.py`, `app/seed.py`, `tests/test_admin_seed.py`).
+
+## QA reporting
+
+Keep browser-tool failures separate from application failures. `.factory/skills/qa/scripts/qa-tools.sh` deliberately exits zero for installation and preflight findings so the informational QA job can publish a report. `.factory/skills/qa/SKILL.md` requires reading `qa-results/preflight.txt` on each affected CI web run: missing output or `QA_PREFLIGHT: BLOCKED` blocks browser flows; `APP_FAIL` records are application failures, regardless of the header. Continue affected API flows, and never substitute curl for blocked browser coverage.
+
+Only trusted setup steps install the pinned browser stack. The keyed agent must not run the installer, repair tooling, or execute checkout code. Preserve the offline reporting regressions in `tests/test_qa_tools.py` and the base-branch instruction boundary in `.github/workflows/qa.yml`. See [Testing](testing.md) and [Tooling](tooling.md).
 
 ## Change discipline
 

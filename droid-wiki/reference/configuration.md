@@ -40,6 +40,8 @@ The database image is `postgres:16`, with persistent named volume `ledgerlite-pg
 
 `app/db.py` creates a synchronous pool with minimum one and maximum ten connections. `app/main.py` waits up to ten seconds when opening it and closes it on shutdown. Startup does not apply the schema. Schema application is explicit through `app/db.py` and `app/seed.py`.
 
+`app/rate_limits.py` fixes `TRANSFER_ATTEMPTS = 20` and `TRANSFER_WINDOW_SECONDS = 60` in code, not environment settings. Only `POST /ui/transfer` calls the limiter after CSRF validation. Counters persist in the `transfer_rate_limits` table defined in `db/schema.sql`; changing workers or sessions does not reset them. See [Web interface](../features/web-interface.md) for counted attempts and response behavior.
+
 The documented local server command is `uv run uvicorn app.main:app --reload`; host, port, and logging changes are Uvicorn CLI concerns, not `Settings` fields. Cookie `Secure` is derived from the request hostname in `app/security.py`.
 
 The seed CLI accepts optional `--admin-email <EMAIL>` to create or promote an admin. This is not an environment setting and does not reset an existing user's password.
@@ -58,6 +60,18 @@ The session autouse fixture **drops and recreates that derived database with FOR
 The fixture sets a test-only `JWT_SECRET` with `setdefault`, so an existing environment value wins. Test seed passwords come from `tests/helpers.py`, not the application's `SEED_PASSWORD`.
 
 ## Functional QA configuration
+
+### Local harness configuration
+
+`tools/qa_harness.py` derives its base from `get_settings().database_url`, not automatically from `POSTGRES_DB`. It parses the database name, defaults an absent name to `ledgerlite`, strips **one** matching suffix in the order `_harness`, `_test`, `_qa`, then appends `_harness`; the role is `<base>_harness_app`. Both derived identifiers must match `^[a-z][a-z0-9_]{0,40}$`. Administrative operations use database `postgres` on that configured server.
+
+Allowed host/address entries are `localhost`, `127.0.0.1`, `::1` or absolute Unix socket paths. Connection-string `host`/`hostaddr` and inherited `PGHOST`/`PGHOSTADDR` are considered, with explicit values taking precedence for the corresponding field. Connection services (`service` or nonempty `PGSERVICE`) are refused. Inherited host/address/port defaults, including `PGPORT`, are pinned into connection strings where applicable so the scrubbed child uses the same server. Nonempty `FACTORY_API_KEY` or `QA_EVIDENCE_TOKEN` causes refusal.
+
+The harness generates its own role password, JWT signing key and process nonce; these are runtime state, not new application settings. It starts Uvicorn at `127.0.0.1` on a free port; saved-state status advertises `base_url` using `localhost` and labels the password with the literal `SEED_PASSWORD`, never its value. Restart retains the saved port and signing key.
+
+The child environment explicitly passes `PATH`, `HOME`, `PYTHONDONTWRITEBYTECODE`, generated `DATABASE_URL`/`JWT_SECRET` and configured `SEED_PASSWORD`. It does not pass `JWT_TTL_SECONDS`, but runs at the repository root, so `app/config.py` still loads `.env` fallback settings. Environment scrubbing is not a claim that dotenv input is disabled.
+
+Private `qa-results/.qa-harness.json` stores the credential-bearing app connection string and signing key, plus target/server, port, PID and nonce. It is written with mode `0600` and must never be published or uploaded. The log is `qa-results/qa-harness-server.log`. Saved target mismatches and same-named unmarked database/role resources are refused. See [QA harness](../features/qa-harness.md) for commands and [Debugging](../how-to-contribute/debugging.md) for recovery; this local harness remains separate from the shell QA configuration below.
 
 `.factory/skills/qa/scripts/qa-env.sh` requires a `postgres://` or `postgresql://` URL. It retains its scheme, authority, and query string; appends `_qa` to the database name unless already present; defaults an empty name to `ledgerlite`; and exports the rewritten `DATABASE_URL`. `QA_PG_SCHEME`, `QA_PG_USERINFO`, `QA_PG_HOSTPORT`, `QA_PG_DB`, and `QA_PG_QUERY` are derived shell values, not application settings.
 

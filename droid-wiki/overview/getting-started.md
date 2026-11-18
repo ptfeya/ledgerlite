@@ -41,6 +41,8 @@ Use the password configured by `SEED_PASSWORD`. `app/seed.py` funds these balanc
 
 Seeding is safe to repeat, but it is **not a reset**: `seed` in `app/seed.py` skips demo creation whenever any user already exists. Changing `SEED_PASSWORD` does not rotate existing passwords.
 
+For an existing checkout/database, reapply the schema with `uv run python -m app.seed` before using the updated UI transfer route. `db/schema.sql` now includes `transfer_rate_limits`; server startup does not create it. Schema reapplication preserves existing rate-limit counters as well as ledger data (`app/db.py`, `app/seed.py`, `tests/test_transfer_rate_limits.py`).
+
 ## Optional local admin
 
 ```sh
@@ -48,6 +50,23 @@ uv run python -m app.seed --admin-email admin@example.com
 ```
 
 `seed_admin` in `app/seed.py` creates or promotes that user. A new admin has no accounts and receives the seed password; promotion preserves an existing password and accounts. Ordinary seeding neither grants nor revokes admin access.
+
+## Optional isolated QA
+
+With Postgres and the approved Python environment ready, `tools/qa_harness.py` can run a separate local instance:
+
+```sh
+uv run python -m tools.qa_harness up
+uv run python -m tools.qa_harness status
+# Use the returned base_url for local requests.
+uv run python -m tools.qa_harness down
+```
+
+This uses `<base>_harness`, not the development database or the shell QA server's `<base>_qa`. Run it only locally, without `FACTORY_API_KEY` or `QA_EVIDENCE_TOKEN` in the environment. Do not bypass that guard in a keyed CI agent. Always finish with `down`; see [QA harness](../features/qa-harness.md) and `tools/README.md` for fixtures, outages, and reset semantics.
+
+## Browser QA prerequisites
+
+For local functional browser QA, the approved browser tooling must already be installed. `.factory/skills/qa/SKILL.md` checks `agent-browser --version` and `agent-browser doctor --offline --quick`; a failure means browser coverage is BLOCKED. The CI installer in `.factory/skills/qa/scripts/qa-tools.sh` is not a command for a secret-holding QA agent. Ask before downloads, as required by `AGENTS.md`; see [Tooling](../how-to-contribute/tooling.md).
 
 ## Run checks
 

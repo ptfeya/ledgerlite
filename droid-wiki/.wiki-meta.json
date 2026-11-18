@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-11-17T15:38:39.453Z",
-  "commitHash": "5cf0fa6e5df944dca6aadd15a13c2bcf72a28500",
+  "generatedAt": "2026-11-18T02:28:59Z",
+  "commitHash": "13731d47ad1f8ef07f13e0e53f709dc347585211",
   "branch": "main",
-  "pageCount": 24,
+  "pageCount": 25,
   "topLevelSections": [
     "overview",
     "by-the-numbers",
@@ -32,6 +32,7 @@
     "features/transfers.md",
     "features/accounts-and-history.md",
     "features/web-interface.md",
+    "features/qa-harness.md",
     "api.md",
     "deployment.md",
     "security.md",
@@ -42,12 +43,14 @@
     "reference/dependencies.md"
   ],
   "warnings": [
-    "Phase 3.5 skipped: neither agent-browser nor tuistory is available. QA app entries also have no dev_command."
+    "Phase 3.5 skipped: neither agent-browser nor tuistory is available. QA app entries also have no dev_command.",
+    "Existing Ruff and pytest checks were not run: uv is unavailable. No dependencies or tools were downloaded.",
+    "Lore retains its explicitly dated 0c1e05f history snapshot; the incremental change only updates browser QA tooling."
   ],
   "videoOverview": {
     "status": "failed",
     "warnings": [
-      "hyperframes doctor failed (exit 127): HyperFrames is not installed. FFmpeg and FFprobe are also unavailable. No tools were downloaded because AGENTS.md requires approval."
+      "hyperframes doctor failed (exit 127): HyperFrames is not installed. FFmpeg and FFprobe are also unavailable. No prior playable overview was found. No tools were downloaded because AGENTS.md requires approval."
     ]
   }
 }
