@@ -12,7 +12,7 @@ Python 3.12 · uv · FastAPI · Postgres 16 (Docker Compose) · psycopg · serve
 ## Setup
 
 ```sh
-cp .env.example .env            # then set JWT_SECRET (see below)
+cp .env.example .env            # then set JWT_SECRET and PAYMENTS_GATEWAY_API_KEY (see below)
 docker compose up -d --wait     # Postgres 16 on 127.0.0.1:5432
 uv sync                         # install dependencies into .venv
 uv run python -m app.seed       # create tables and seed demo data (safe to re-run)
@@ -24,6 +24,10 @@ The value in `.env.example` is a placeholder; generate your own:
 ```sh
 openssl rand -hex 32
 ```
+
+Before seeding or starting the app, set `PAYMENTS_GATEWAY_API_KEY` to a nonblank value.
+Use a dummy value only for isolated local development or testing. In other environments,
+inject the credential through the approved secret store. Never commit `.env`.
 
 If port 5432 is taken, change `POSTGRES_PORT` **and** the port in `DATABASE_URL` in `.env`.
 

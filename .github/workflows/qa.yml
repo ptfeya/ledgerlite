@@ -141,8 +141,9 @@ jobs:
           "$T" install
       # The PR's application code runs here, as a different OS user with a scrubbed
       # environment, in a step that has no secrets. It starts before (and outlives) the
-      # step that holds FACTORY_API_KEY. That user cannot read the agent's process
-      # environment, which is what keeps the key out of PR-controlled code. The runner
+      # step that holds FACTORY_API_KEY. The launcher supplies a dummy gateway key.
+      # The app user cannot read the agent's process environment, so the agent
+      # credential stays out of PR-controlled code. The runner
       # user never executes the PR's venv or app; qa-server.sh start only runs psql itself.
       - name: Start QA application server
         if: steps.skills.outputs.present == 'true'

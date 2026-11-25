@@ -14,7 +14,8 @@ from app.routes import api, pages
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    pool = make_pool(get_settings().database_url)
+    settings = get_settings()
+    pool = make_pool(settings.database_url)
     pool.open(wait=True, timeout=10)
     app.state.pool = pool
     try:

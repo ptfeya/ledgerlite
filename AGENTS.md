@@ -6,7 +6,7 @@ Python 3.12, uv, FastAPI, Postgres 16 (Docker Compose), psycopg, Jinja2 + htmx, 
 ## Commands
 
 ```sh
-cp .env.example .env                    # then set JWT_SECRET: openssl rand -hex 32
+cp .env.example .env                    # set JWT_SECRET and PAYMENTS_GATEWAY_API_KEY (see README)
 docker compose up -d --wait             # Postgres on 127.0.0.1:5432
 uv sync                                 # install dependencies
 uv run python -m app.seed               # create schema and demo data (safe to re-run)

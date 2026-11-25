@@ -2,6 +2,8 @@ import os
 
 # Must be set before the app reads settings. Real env vars win over .env.
 os.environ.setdefault("JWT_SECRET", "test-only-secret-not-for-production")
+# The suite does not need a real gateway credential, even if the caller has one.
+os.environ["PAYMENTS_GATEWAY_API_KEY"] = "test-only-gateway-key"
 
 import psycopg  # noqa: E402
 import pytest  # noqa: E402
