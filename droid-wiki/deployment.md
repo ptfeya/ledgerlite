@@ -33,7 +33,7 @@ uv run uvicorn app.main:app --reload
 
 These are local setup instructions, not commands executed during this wiki run. `--reload` is the development command, not a production process-management recommendation.
 
-`app/config.py` reads `.env` and environment settings and caches the settings instance. `JWT_SECRET` is required; keep it private. Align `DATABASE_URL` with Compose's database credentials and host port. See [Configuration](reference/configuration.md) for defaults and precedence.
+`app/config.py` reads `.env` and environment settings and caches the settings instance. Both `JWT_SECRET` and `PAYMENTS_GATEWAY_API_KEY` are required before seeding or starting; use approved secret injection outside isolated development or testing. Startup validates settings before opening the database pool. Align `DATABASE_URL` with Compose's database credentials and host port. See [Configuration](reference/configuration.md) for defaults and precedence.
 
 ## Schema, seed, and persistence
 
