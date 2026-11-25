@@ -125,3 +125,19 @@ def reconcile(
     if imbalance == 0:
         return {"status": "ok"}
     return {"status": "imbalance", "imbalance_cents": imbalance}
+
+
+@router.get("/accounts/{account_id}/statement")
+def statement(
+    account_id: int,
+    user: CurrentUser = Depends(get_api_user),
+    pool: ConnectionPool = Depends(get_pool),
+) -> dict:
+    """Statement export for an account (backs the new Statements page)."""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, transfer_id, amount_cents, created_at FROM ledger_entries "
+            "WHERE account_id = %s ORDER BY id DESC LIMIT 500",
+            (account_id,),
+        ).fetchall()
+    return {"account_id": account_id, "entries": rows}
