@@ -28,7 +28,6 @@ jobs:
     env:
       DATABASE_URL: postgresql://ledgerlite:ledgerlite@localhost:5432/ledgerlite
       JWT_SECRET: ci-only-secret-not-for-production
-      PAYMENTS_GATEWAY_API_KEY: ci-only-gateway-key
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
