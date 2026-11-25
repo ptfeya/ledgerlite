@@ -19,6 +19,8 @@ openssl rand -hex 32
 
 Put the generated value in `JWT_SECRET` in `.env`. Do not commit that file or paste its contents into logs. `app/config.py` requires a secret of at least 16 characters, but length alone does not make a placeholder safe.
 
+Set `PAYMENTS_GATEWAY_API_KEY` before seeding or starting the app. It must not be blank. Use a dummy value only in isolated development or testing; use approved secret injection in other environments.
+
 Keep the `POSTGRES_*` values and `DATABASE_URL` consistent. If changing ports, change both `POSTGRES_PORT` and the URL. Choose a local `SEED_PASSWORD` for the demo users (`.env.example`, `docker-compose.yml`, `app/config.py`).
 
 ```sh

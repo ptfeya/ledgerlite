@@ -18,6 +18,7 @@
 #
 # start needs DATABASE_URL (a role that can create roles and databases), JWT_SECRET and
 # SEED_PASSWORD in the environment, `uv sync` done, and psql on PATH.
+# The isolated app gets a dummy gateway key, never one from the parent environment.
 # QA_RUN_AS=<user> runs seed and server as that OS user with a scrubbed environment.
 set -euo pipefail
 
@@ -110,7 +111,8 @@ SQL
     "$ROOT" "$port" "$nonce" "$user" "$(fingerprint)" > "$STATE"
 
   local run=(env -i PATH="$PATH" HOME=/nonexistent PYTHONDONTWRITEBYTECODE=1
-    DATABASE_URL="$app_url" JWT_SECRET="$JWT_SECRET" SEED_PASSWORD="$SEED_PASSWORD")
+    DATABASE_URL="$app_url" JWT_SECRET="$JWT_SECRET" SEED_PASSWORD="$SEED_PASSWORD"
+    PAYMENTS_GATEWAY_API_KEY=qa-only-gateway-key)
   [ -z "${QA_RUN_AS:-}" ] || run=(sudo -n -u "$QA_RUN_AS" "${run[@]}")
 
   "${run[@]}" "$PY" -m app.seed
