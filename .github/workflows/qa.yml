@@ -141,7 +141,7 @@ jobs:
           "$T" install
       # The PR's application code runs here, as a different OS user with a scrubbed
       # environment, in a step that has no secrets. It starts before (and outlives) the
-      # step that holds FACTORY_API_KEY. The launcher supplies a dummy gateway key.
+      # step that holds FACTORY_API_KEY. QA uses a dummy gateway key.
       # The app user cannot read the agent's process environment, so the agent
       # credential stays out of PR-controlled code. The runner
       # user never executes the PR's venv or app; qa-server.sh start only runs psql itself.
@@ -155,6 +155,16 @@ jobs:
           chmod a+rx .
           chmod -R a+rX app db .venv
           chmod -R go-rwx .git base
+          # The trusted base launcher may not forward the new gateway setting.
+          # Seed and Uvicorn can both read this dummy through the app's dotenv loader.
+          (
+            qa_dotenv=$(mktemp .qa-dotenv.XXXXXXXX)
+            trap 'rm -f -- "$qa_dotenv"' EXIT
+            printf '%s\n' 'PAYMENTS_GATEWAY_API_KEY=qa-only-gateway-key' > "$qa_dotenv"
+            chmod 0644 "$qa_dotenv"
+            # Link atomically and fail if .env already exists, including a symlink.
+            ln -T -- "$qa_dotenv" .env
+          )
           S=.factory/skills/qa/scripts/qa-server.sh
           QA_RUN_AS=qa-app setsid nohup "$S" start > "$RUNNER_TEMP/qa-server.log" 2>&1 < /dev/null &
           for _ in $(seq 60); do
