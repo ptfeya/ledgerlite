@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from tests.helpers import (
+    TEST_PASSWORD,
     TRANSFER_FAILURE_MESSAGE,
     balance,
     count,
@@ -282,6 +283,39 @@ def test_login_requires_csrf_token(client):
     client.get("/ui/login")  # receive the CSRF cookie
     wrong = client.post("/ui/login", data={**form, "csrf_token": "x.y"}, follow_redirects=False)
     assert wrong.status_code == 403
+    assert not client.cookies.get("ll_session")
+
+
+def test_multipart_login_with_valid_csrf_token(client):
+    token = csrf_from_html(client.get("/ui/login").text)
+    assert not client.cookies.get("ll_session")
+
+    response = client.post(
+        "/ui/login",
+        files={
+            "email": (None, "alice@example.com"),
+            "password": (None, TEST_PASSWORD),
+            "csrf_token": (None, token),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.request.headers["content-type"].startswith("multipart/form-data;")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/accounts"
+    assert client.cookies.get("ll_session")
+
+
+@pytest.mark.parametrize("token", [None, "invalid-token"], ids=["missing", "invalid"])
+def test_multipart_login_requires_valid_csrf_token(client, token):
+    client.get("/ui/login")
+    fields = {"email": (None, "alice@example.com"), "password": (None, TEST_PASSWORD)}
+    if token is not None:
+        fields["csrf_token"] = (None, token)
+
+    response = client.post("/ui/login", files=fields, follow_redirects=False)
+
+    assert response.status_code == 403
     assert not client.cookies.get("ll_session")
 
 
