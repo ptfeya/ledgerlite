@@ -8,10 +8,15 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "darwin", reason="Requires Linux (Bash 4+ and the Linux Chrome build)."
+)
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = REPO / ".factory" / "skills" / "qa" / "scripts"
