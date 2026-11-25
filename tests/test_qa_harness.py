@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import sys
 
 import psycopg
 import pytest
@@ -12,6 +13,10 @@ from app.config import Settings
 from tests.conftest import ADMIN_DATABASE_URL
 from tests.helpers import TEST_PASSWORD, ledger_total
 from tools import qa_harness as h
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "darwin", reason="Requires Linux (Bash 4+ and the Linux Chrome build)."
+)
 
 # --- guards (no database needed beyond conftest's autouse setup) ---------------------------
 
