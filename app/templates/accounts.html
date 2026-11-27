@@ -2,17 +2,14 @@
 {% block title %}Accounts · LedgerLite{% endblock %}
 {% block content %}
 <h1>Accounts</h1>
-<table>
-  <thead><tr><th>ID</th><th>Name</th><th class="num">Balance</th><th></th></tr></thead>
-  <tbody>
+<div class="cards">
   {% for account in accounts %}
-    <tr>
-      <td>{{ account.id }}</td>
-      <td>{{ account.name }}</td>
-      <td class="num">{{ account.balance_cents | money }}</td>
-      <td><a href="/ui/history?account_id={{ account.id }}">History</a></td>
-    </tr>
+  <section class="card">
+    <span class="card-id">Account {{ account.id }}</span>
+    <span class="card-name">{{ account.name }}</span>
+    <span class="card-balance">{{ account.balance_cents | money }}</span>
+    <a href="/ui/history?account_id={{ account.id }}">History</a>
+  </section>
   {% endfor %}
-  </tbody>
-</table>
+</div>
 {% endblock %}
