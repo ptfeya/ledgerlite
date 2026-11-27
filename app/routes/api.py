@@ -134,10 +134,13 @@ def statement(
     pool: ConnectionPool = Depends(get_pool),
 ) -> dict:
     """Statement export for an account (backs the new Statements page)."""
-    with pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT id, transfer_id, amount_cents, created_at FROM ledger_entries "
-            "WHERE account_id = %s ORDER BY id DESC LIMIT 500",
-            (account_id,),
-        ).fetchall()
-    return {"account_id": account_id, "entries": rows}
+    rows = ledger.list_entries(pool, user.id, account_id, limit=500)
+    if rows is None:
+        raise HTTPException(404, "Account not found")
+    return {
+        "account_id": account_id,
+        "entries": [
+            {field: row[field] for field in ("id", "transfer_id", "amount_cents", "created_at")}
+            for row in rows
+        ],
+    }

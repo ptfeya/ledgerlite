@@ -1,4 +1,6 @@
 import time
+from datetime import datetime
+from uuid import UUID
 
 import jwt
 import pytest
@@ -56,6 +58,70 @@ def test_user_can_read_own_entries(client, alice, ids):
     assert [e["amount_cents"] for e in entries] == [-500, 100_000]  # newest first
 
 
+def test_user_can_read_own_statement(client, alice, ids):
+    account_id = ids["alice"]["Checking"]
+    transfer = post_transfer(client, alice, "statement", account_id, ids["bob"]["Checking"], 500)
+    assert transfer.status_code == 201
+
+    response = client.get(f"/accounts/{account_id}/statement", headers=alice)
+
+    assert response.status_code == 200
+    statement = response.json()
+    assert set(statement) == {"account_id", "entries"}
+    assert statement["account_id"] == account_id
+    entries = statement["entries"]
+    assert [entry["amount_cents"] for entry in entries] == [-500, 100_000]
+    assert entries[0]["id"] > entries[1]["id"]
+    assert entries[0]["transfer_id"] == transfer.json()["id"]
+    for entry in entries:
+        assert set(entry) == {"id", "transfer_id", "amount_cents", "created_at"}
+        assert isinstance(entry["id"], int)
+        UUID(entry["transfer_id"])
+        datetime.fromisoformat(entry["created_at"])
+
+
+def test_statement_returns_at_most_the_newest_500_entries(db, client, alice, ids):
+    account_id = ids["alice"]["Checking"]
+    for index in range(500):
+        transfer = post_transfer(
+            client, alice, f"statement-{index}", account_id, ids["bob"]["Checking"], 1
+        )
+        assert transfer.status_code == 201
+
+    entry_ids = [
+        row["id"]
+        for row in db.execute("SELECT id FROM ledger_entries WHERE account_id = %s", (account_id,))
+    ]
+    assert len(entry_ids) == 501  # includes the opening balance
+
+    response = client.get(f"/accounts/{account_id}/statement", headers=alice)
+
+    assert response.status_code == 200
+    expected_ids = sorted(entry_ids, reverse=True)[:500]
+    assert [entry["id"] for entry in response.json()["entries"]] == expected_ids
+
+
+def test_user_can_read_own_empty_statement(db, client, alice, ids):
+    account_id = db.execute(
+        "INSERT INTO accounts (user_id, name) SELECT user_id, %s FROM accounts WHERE id = %s "
+        "RETURNING id",
+        ("Empty account", ids["alice"]["Checking"]),
+    ).fetchone()["id"]
+
+    response = client.get(f"/accounts/{account_id}/statement", headers=alice)
+
+    assert response.status_code == 200
+    assert response.json() == {"account_id": account_id, "entries": []}
+
+
+def test_statement_hides_inaccessible_accounts(client, alice, ids):
+    for account_id in (ids["bob"]["Checking"], 999999, ids["system"]):
+        response = client.get(f"/accounts/{account_id}/statement", headers=alice)
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Account not found"}
+
+
 def test_user_cannot_transfer_out_of_another_users_account(db, client, alice, ids):
     victim = ids["bob"]["Checking"]
     start = balance(db, victim)
@@ -109,6 +175,7 @@ def test_deleted_admin_token_is_rejected(db, client, admin):
         ("GET", "/accounts"),
         ("POST", "/transfers"),
         ("GET", "/accounts/1/entries"),
+        ("GET", "/accounts/1/statement"),
         ("POST", "/reconcile"),
     ],
 )
@@ -137,6 +204,15 @@ def test_session_cookie_does_not_authenticate_the_json_api(client, user):
     assert client.post("/reconcile").status_code == 401
     assert client.post("/transfers", headers={"Idempotency-Key": "k"}, json={}).status_code == 401
     assert api_login(client, "alice")  # bearer login still works
+
+
+def test_session_cookie_does_not_authenticate_statement(client, ids):
+    assert page_login(client, "alice").status_code == 303
+    assert client.cookies.get("ll_session")
+
+    response = client.get(f"/accounts/{ids['alice']['Checking']}/statement")
+
+    assert response.status_code == 401
 
 
 def test_admin_cookie_does_not_elevate_a_non_admin_token(client, alice):
