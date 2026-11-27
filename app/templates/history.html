@@ -2,7 +2,7 @@
 {% block title %}History · LedgerLite{% endblock %}
 {% block content %}
 <h1>History</h1>
-<div class="card">
+<div class="card toolbar">
 <form method="get" action="/ui/history" class="inline">
   <label for="account_id">Account</label>
   <select id="account_id" name="account_id" onchange="this.form.submit()">
@@ -13,18 +13,52 @@
   <noscript><button type="submit">Show</button></noscript>
 </form>
 </div>
-<table>
-  <thead><tr><th>When</th><th>Transfer</th><th>Type</th><th class="num">Amount</th></tr></thead>
+{% set ns = namespace(balance=0, name='', found=false) %}
+{% for account in accounts if account.id == selected %}
+  {% set ns.balance = account.balance_cents %}
+  {% set ns.name = account.name %}
+  {% set ns.found = true %}
+{% endfor %}
+{% if ns.found %}
+<section class="card summary">
+  <div>
+    <span class="pill">{{ ns.name }}</span>
+    <h2>Peachtree {{ ns.name }}</h2>
+    <span class="card-number">•••• •••• {{ '%04d' | format(selected % 10000) }}</span>
+  </div>
+  <dl class="kv">
+    <div><dt>Current balance</dt><dd class="big">{{ ns.balance | money }}</dd></div>
+    <div><dt>Available balance</dt><dd>{{ ns.balance | money }}</dd></div>
+  </dl>
+  {% if entries %}
+  {% set recent = entries[:14] | reverse | list %}
+  {% set peak = recent | map(attribute='amount_cents') | map('abs') | max %}
+  <div class="spark-wrap">
+    <span class="card-label">Recent activity</span>
+    <div class="spark" role="img" aria-label="Bar chart of the last {{ recent | length }} entries">
+      {% for entry in recent %}
+      <span class="bar {{ 'credit-bar' if entry.amount_cents > 0 else 'debit-bar' }}" style="height: {{ [10, (entry.amount_cents | abs) * 100 // peak] | max }}%"></span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% set run = namespace(balance=ns.balance) %}
+<table class="ledger">
+  <thead><tr><th>Date</th><th>Description</th><th>Status</th><th class="num">Amount</th><th class="num">Balance</th></tr></thead>
   <tbody>
   {% for entry in entries %}
     <tr>
-      <td>{{ entry.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-      <td class="muted">{{ entry.transfer_id }}</td>
-      <td>{{ 'Credit' if entry.amount_cents > 0 else 'Debit' }}</td>
+      <td>{{ entry.created_at.strftime('%b %d, %Y') }}<br><span class="muted small">{{ entry.created_at.strftime('%H:%M:%S') }}</span></td>
+      <td>{{ 'Transfer received' if entry.amount_cents > 0 else 'Transfer sent' }}<br><span class="muted small">{{ 'Credit' if entry.amount_cents > 0 else 'Debit' }} · Ref {{ entry.transfer_id | string | truncate(8, true, '') }}</span></td>
+      <td><span class="badge posted">Posted</span></td>
       <td class="num {{ 'credit' if entry.amount_cents > 0 else 'debit' }}">{{ entry.amount_cents | money }}</td>
+      <td class="num">{{ run.balance | money }}</td>
     </tr>
+    {% set run.balance = run.balance - entry.amount_cents %}
   {% else %}
-    <tr><td colspan="4" class="muted">No entries yet.</td></tr>
+    <tr><td colspan="5" class="empty">No entries yet. Transfers you send or receive will appear here.</td></tr>
   {% endfor %}
   </tbody>
 </table>
