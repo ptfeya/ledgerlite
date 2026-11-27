@@ -6,7 +6,7 @@
   <!-- Swap error responses (422, 403, ...) too, so form errors are shown inline. -->
   <meta name="htmx-config" content='{"responseHandling":[{"code":".*","swap":true}]}'>
   <title>{% block title %}Peachtree Federal Bank{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css?v=peachtree-1">
+  <link rel="stylesheet" href="/static/style.css?v=peachtree-2">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
@@ -28,9 +28,15 @@
       <a href="/ui/transfer">Transfer</a>
       <a href="/ui/history">History</a>
     </nav>
+    <div class="session">
+      <span class="welcome">Welcome back, {{ user.email.split('@')[0].replace('.', ' ').replace('_', ' ').title() }}</span>
+      <span class="secure">
+        <svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><rect x="0.5" y="5.5" width="11" height="8" rx="1.5" fill="#F4A261"/><path d="M3 5.5V4a3 3 0 0 1 6 0v1.5" fill="none" stroke="#F4A261" stroke-width="1.5"/></svg>
+        Secure session · <span class="muted">{{ user.email }}</span>
+      </span>
+    </div>
     <form method="post" action="/ui/logout" class="inline">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <span class="muted">{{ user.email }}</span>
       <button type="submit">Log out</button>
     </form>
     {% endif %}
@@ -38,6 +44,9 @@
   <main>
     {% block content %}{% endblock %}
   </main>
-  <footer>Demo environment · fictional data</footer>
+  <footer>
+    <p>Peachtree Federal Bank · Member FDIC · Equal Housing Lender</p>
+    <p>Demo environment · fictional data</p>
+  </footer>
 </body>
 </html>
