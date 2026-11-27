@@ -1,6 +1,6 @@
 # Configuration
 
-LedgerLite reads four application settings through Pydantic Settings. Compose, pytest, and functional QA have separate configuration responsibilities.
+LedgerLite reads five application settings through Pydantic Settings. Compose, pytest, and functional QA have separate configuration responsibilities.
 
 ## Application settings
 
@@ -12,6 +12,7 @@ Defined in `app/config.py`:
 | `JWT_SECRET` | string | **Required**, no default | Minimum 16 characters; signs JWTs and CSRF HMACs |
 | `JWT_TTL_SECONDS` | integer | `3600` | Token and session-cookie lifetime; no explicit positive/min/max constraint |
 | `SEED_PASSWORD` | string | `ledgerlite-dev` | Password used when creating seed users or a new explicit admin; no minimum-length field constraint |
+| `PAYMENTS_GATEWAY_API_KEY` | masked string | **Required**, no default | Missing, empty, and whitespace-only values are rejected before seed or startup can connect to the database |
 
 The URL and seed-password defaults are local-development values, not production credentials. `.env.example` contains placeholders and example configuration; copying it does not generate a secret. A long placeholder can satisfy the secret's length validation, so replace it. Keep `DATABASE_URL` credentials, host, port, and database synchronized with your actual Postgres instance.
 
@@ -55,7 +56,7 @@ The seed CLI accepts optional `--admin-email <EMAIL>` to create or promote an ad
 
 The session autouse fixture **drops and recreates that derived database with FORCE**, then applies the schema. Each test truncates and reseeds it. The connection role needs the corresponding administrative privileges. Do not point test configuration at shared or valuable databases.
 
-The fixture sets a test-only `JWT_SECRET` with `setdefault`, so an existing environment value wins. Test seed passwords come from `tests/helpers.py`, not the application's `SEED_PASSWORD`.
+The fixture sets a test-only `JWT_SECRET` with `setdefault`, so an existing environment value wins. It always uses a dummy `PAYMENTS_GATEWAY_API_KEY` instead of any inherited value. Test seed passwords come from `tests/helpers.py`, not the application's `SEED_PASSWORD`.
 
 ## Functional QA configuration
 
@@ -63,7 +64,7 @@ The fixture sets a test-only `JWT_SECRET` with `setdefault`, so an existing envi
 
 `.factory/skills/qa/scripts/qa-server.sh start` requires exported `DATABASE_URL`, `JWT_SECRET`, and `SEED_PASSWORD`, plus an existing virtualenv and `psql`. It drops/recreates the derived QA database and gives the server a generated-password `<qa_database>_app` role without superuser, database/role creation, replication, or RLS-bypass privileges. It owns the QA database.
 
-Optional `QA_RUN_AS` selects an OS user for seed/server commands through noninteractive sudo; otherwise the current user is used. The child environment is scrubbed and explicitly passes the three application values above, but not `JWT_TTL_SECONDS`. The app can still read its working-directory `.env` for other settings.
+Optional `QA_RUN_AS` selects an OS user for seed/server commands through noninteractive sudo; otherwise the current user is used. The child environment is scrubbed and explicitly passes the three application values above and a dummy `PAYMENTS_GATEWAY_API_KEY`, but not `JWT_TTL_SECONDS`. The app can still read its working-directory `.env` for other settings.
 
 Port selection starts at 8000 and tries random ports in `20000..39999` if needed. `QA_ROOT`, `QA_PORT`, `QA_NONCE`, `QA_USER`, and `QA_FINGERPRINT` are generated state in `qa-results/.qa-server`, not user-facing app settings. `FACTORY_API_KEY` and `QA_EVIDENCE_TOKEN` must be absent for the lifecycle script's commands; they belong to automation, not the application. Verification checks freshness, not trust.
 

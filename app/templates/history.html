@@ -2,6 +2,7 @@
 {% block title %}History · LedgerLite{% endblock %}
 {% block content %}
 <h1>History</h1>
+<div class="card">
 <form method="get" action="/ui/history" class="inline">
   <label for="account_id">Account</label>
   <select id="account_id" name="account_id" onchange="this.form.submit()">
@@ -11,6 +12,7 @@
   </select>
   <noscript><button type="submit">Show</button></noscript>
 </form>
+</div>
 <table>
   <thead><tr><th>When</th><th>Transfer</th><th>Type</th><th class="num">Amount</th></tr></thead>
   <tbody>

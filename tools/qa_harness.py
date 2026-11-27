@@ -209,6 +209,7 @@ def start_server(state: dict, settings) -> None:
         "DATABASE_URL": state["app_url"],
         "JWT_SECRET": state["jwt_secret"],
         "SEED_PASSWORD": settings.seed_password,
+        "PAYMENTS_GATEWAY_API_KEY": "qa-only-gateway-key",
     }
     cmd = [
         sys.executable,
