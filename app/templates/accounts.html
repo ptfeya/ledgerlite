@@ -2,25 +2,37 @@
 {% block title %}Accounts · LedgerLite{% endblock %}
 {% block content %}
 <h1>Accounts</h1>
-<div class="cards">
-  {% for account in accounts %}
-  <section class="card account-card">
-    <div class="card-top">
-      <span class="pill">{{ account.name }}</span>
-      <span class="card-id">Account ending {{ '%04d' | format(account.id % 10000) }}</span>
+<div class="layout">
+  <details class="panel" open>
+    <summary>
+      <h2>Bank accounts</h2>
+      <svg class="chevron" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </summary>
+    {% for account in accounts %}
+    <div class="account-row">
+      <div class="account-main">
+        <a class="account-link" href="/ui/history?account_id={{ account.id }}">Peachtree {{ account.name }} (…{{ '%04d' | format(account.id % 10000) }}) ›</a>
+        <span class="figure">{{ account.balance_cents | money }}</span>
+        <span class="dotted" title="Funds you can use now. This demo ledger has no holds.">Available balance</span>
+      </div>
+      <div class="account-actions">
+        <a class="btn btn-solid" href="/ui/transfer">Transfer money</a>
+        <a class="btn btn-light" href="/ui/history?account_id={{ account.id }}">Statements</a>
+      </div>
     </div>
-    <span class="card-name">Peachtree {{ account.name }}</span>
-    <span class="card-number" aria-label="Masked account number">•••• •••• {{ '%04d' | format(account.id % 10000) }}</span>
-    <span class="card-label">Current balance</span>
-    <span class="card-balance">{{ account.balance_cents | money }}</span>
-    <dl class="kv">
-      <div><dt>Available balance</dt><dd>{{ account.balance_cents | money }}</dd></div>
-      <div><dt>Pending holds</dt><dd>$0.00</dd></div>
+    {% else %}
+    <p class="empty">No accounts to show yet.</p>
+    {% endfor %}
+  </details>
+  <aside class="panel security" aria-labelledby="security-title">
+    <h2 id="security-title">Security</h2>
+    <p class="secure-line">
+      <svg width="14" height="16" viewBox="0 0 12 14" aria-hidden="true"><rect x="0.5" y="5.5" width="11" height="8" rx="1.5" fill="#0F2A44"/><path d="M3 5.5V4a3 3 0 0 1 6 0v1.5" fill="none" stroke="#0F2A44" stroke-width="1.5"/></svg>
+      Secure session active
+    </p>
+    <dl class="kv stack">
+      <div><dt>Signed in as</dt><dd class="wrap">{{ user.email }}</dd></div>
     </dl>
-    <a class="card-link" href="/ui/history?account_id={{ account.id }}">History</a>
-  </section>
-  {% else %}
-  <div class="empty card">No accounts to show yet.</div>
-  {% endfor %}
+  </aside>
 </div>
 {% endblock %}
