@@ -2,6 +2,7 @@
 {% block title %}Transfer · LedgerLite{% endblock %}
 {% block content %}
 <h1>Transfer</h1>
+<div class="card card-form">
 <table>
   <thead><tr><th>ID</th><th>Your account</th><th class="num">Balance</th></tr></thead>
   <tbody>
@@ -27,4 +28,5 @@
   <p><button type="submit">Send</button></p>
 </form>
 <div id="result">{% include "_transfer_result.html" %}</div>
+</div>
 {% endblock %}

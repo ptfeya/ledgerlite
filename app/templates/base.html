@@ -5,15 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- Swap error responses (422, 403, ...) too, so form errors are shown inline. -->
   <meta name="htmx-config" content='{"responseHandling":[{"code":".*","swap":true}]}'>
-  <title>{% block title %}LedgerLite{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <title>{% block title %}Peachtree Federal Bank{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css?v=peachtree-1">
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
   <header>
-    <strong>LedgerLite</strong>
+    <div class="brand">
+      <svg width="36" height="36" viewBox="0 0 36 36" role="img" aria-label="Peachtree Federal Bank peach mark">
+        <circle cx="18" cy="20" r="13" fill="#F4A261"/>
+        <path d="M18 8c0 8 0 14 0 24" stroke="#0F2A44" stroke-width="1.5" fill="none" opacity=".35"/>
+        <path d="M18 8c2-5 8-6 11-4-1 4-6 7-11 4z" fill="#8fd18a"/>
+      </svg>
+      <div>
+        <span class="brand-name">Peachtree Federal Bank</span>
+        <span class="brand-sub">Payments · LedgerLite sandbox</span>
+      </div>
+    </div>
     {% if user %}
-    <nav>
+    <nav aria-label="Main">
       <a href="/ui/accounts">Accounts</a>
       <a href="/ui/transfer">Transfer</a>
       <a href="/ui/history">History</a>
@@ -28,5 +38,6 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <footer>Demo environment · fictional data</footer>
 </body>
 </html>
