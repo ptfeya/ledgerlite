@@ -2,7 +2,7 @@
 
 Active contributors: ptfeya.
 
-LedgerLite exposes five JSON endpoints without an `/api` prefix. Money amounts are integer cents. This is a source-derived reference, not a live API probe.
+LedgerLite exposes six JSON endpoints without an `/api` prefix. Money amounts are integer cents. This is a source-derived reference, not a live API probe.
 
 ## Contract and authentication
 
@@ -22,6 +22,7 @@ Declared request-model, path, query, and header validation errors return FastAPI
 | `GET /accounts` | Bearer token | `200` account array, ordered by account ID |
 | `POST /transfers` | Bearer token, `Idempotency-Key`, transfer body | `201` transfer object, including replays |
 | `GET /accounts/{account_id}/entries` | Bearer token; integer account ID; optional integer `limit`, default `100`, range `1..500` | `200` entry array, newest ID first |
+| `GET /accounts/{account_id}/statement` | Bearer token; integer account ID | `200` statement object with up to 500 entries, newest ID first; **no ownership check** |
 | `POST /reconcile` | Admin bearer token; no body required | `200` reconciliation object |
 
 ### Login
@@ -55,6 +56,17 @@ Only the caller's accounts are listed. There is no accounts-list pagination. The
 
 Each entry contains `id` (integer), `transfer_id` (UUID string), `account_id` (integer), `amount_cents` (signed integer), and `created_at` (datetime string). Negative entries debit; positive entries credit. Entries for a missing account or another user's account both return `404`, `Account not found`. There is no cursor or offset parameter.
 
+### Statement export
+
+`GET /accounts/{account_id}/statement` takes a bearer token and an integer account ID. It has no query parameters and no response model. The handler in `app/routes/api.py` runs its own SQL against `ledger_entries` instead of calling `app/ledger.py`, and always returns the 500 newest entries by entry ID:
+
+```json
+{"account_id":2,"entries":[{"id":9,"transfer_id":"<UUID>","amount_cents":-2500,"created_at":"<DATETIME>"}]}
+```
+
+Entry objects omit `account_id`, unlike `/entries`. An account ID with no entries, including one that does not exist, returns `200` with an empty `entries` array rather than `404`.
+
+The query filters only by account ID. It does not check that the caller owns the account or that the account is not the system funding account, so any authenticated user can read any account's recent entries. The `/entries` endpoint does perform that check. The docstring mentions a Statements page, but neither `app/routes/pages.py` nor `app/templates/` has one, and no test in `tests/` calls this endpoint. See [Security](security.md#known-gaps).
 ### Transfers and retries
 
 Required body:

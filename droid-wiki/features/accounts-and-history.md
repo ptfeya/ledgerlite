@@ -4,7 +4,7 @@ Active contributors: ptfeya
 
 ## Purpose
 
-Accounts expose balances derived from ledger entries and owner-authorized entry history. There is no stored balance column to update alongside a transfer. Sources: `app/ledger.py`, `db/schema.sql`.
+Accounts expose balances derived from ledger entries and owner-authorized entry history. The statement export endpoint is the one read path without that authorization. There is no stored balance column to update alongside a transfer. Sources: `app/ledger.py`, `db/schema.sql`.
 
 ## Read abstractions and authorization
 
@@ -14,12 +14,14 @@ Accounts expose balances derived from ledger entries and owner-authorized entry 
 
 | Surface | Account list and history |
 | --- | --- |
-| JSON | `GET /accounts`; `GET /accounts/{account_id}/entries?limit=100`, with accepted limits `1..500` |
+| JSON | `GET /accounts`; `GET /accounts/{account_id}/entries?limit=100`, with accepted limits `1..500`; `GET /accounts/{account_id}/statement`, fixed at 500 entries |
 | HTML | `GET /ui/accounts`; `GET /ui/history?account_id=...`, reading at most 200 entries |
 
 API authentication accepts bearer tokens only; HTML uses the session cookie. Both obtain a current database-backed user before passing its ID to ledger reads. Sources: `app/auth.py`, `app/routes/api.py`, `app/routes/pages.py`.
 
-Without an explicit history selection, HTML chooses the first account in the ordered account list. With no accounts, it renders empty history. Its template shows time, transfer UUID, credit/debit classification and signed formatted amount. The account page links directly to each account's history. Sources: `app/routes/pages.py`, `app/templates/history.html`, `app/templates/accounts.html`.
+`statement` in `app/routes/api.py` authenticates the caller but never uses the user ID. It queries `ledger_entries` directly from the route by account ID, so it returns entries for foreign and system accounts, and `200` with an empty list for missing ones. Its entry objects omit `account_id`. No test covers it. See [Security](../security.md#known-gaps).
+
+Without an explicit history selection, HTML chooses the first account in the ordered account list. With no accounts, it renders empty history. When the selected account is in the caller's list, the template shows a summary panel with its current balance, deposit and withdrawal totals for the month of the newest entry, and a bar chart of up to 14 recent entries. Each table row shows date and time, a sent/received description with a credit/debit label and the first eight characters of the transfer UUID, a fixed "Posted" status, the signed formatted amount, and a running balance. The template computes that running balance by starting from the account's current balance and subtracting entries in newest-first order. The account page lists each account as a row in a "Bank accounts" panel with its name, the last four digits of a number derived from the account ID, the formatted balance, and links to transfer money or to that account's history ("Statements"). "Available balance" is only a label on the same figure, because the ledger has no holds. A side card shows the signed-in email. See [display-only values](web-interface.md#display-only-values). Sources: `app/routes/pages.py`, `app/templates/history.html`, `app/templates/accounts.html`.
 
 See [web interface](web-interface.md) for navigation and [JSON API](../api.md) for endpoint contracts.
 
@@ -27,13 +29,13 @@ See [web interface](web-interface.md) for navigation and [JSON API](../api.md) f
 
 `app/seed.py` creates one ownerless system funding account and four demo accounts: Alice's Checking/Savings receive 100,000/50,000 cents; Bob's receive 75,000/25,000 cents. Each opening balance has a matching negative system entry. Seeding returns without adding demo data if any user already exists. Sources: `app/seed.py`.
 
-The schema requires system accounts to have no owner and ordinary accounts to have an owner. Owner-filtered reads therefore do not expose the system account. Normal transfers reject it as either endpoint, including forged HTML source IDs. Sources: `db/schema.sql`, `app/ledger.py`, `tests/test_system_account.py`.
+The schema requires system accounts to have no owner and ordinary accounts to have an owner. Owner-filtered reads therefore do not expose the system account; the unfiltered statement export does. Normal transfers reject it as either endpoint, including forged HTML source IDs. Sources: `db/schema.sql`, `app/ledger.py`, `tests/test_system_account.py`.
 
 `ledger_imbalance` sums **all** entries, including funding entries. `POST /reconcile` requires an API admin and returns `{"status":"ok"}` for zero or `{"status":"imbalance","imbalance_cents":...}` otherwise. It does not repair balances, check each transfer individually, or prove the absence of offsetting errors. Admin status is reread from the database on each authenticated request. Sources: `app/ledger.py`, `app/routes/api.py`, `app/auth.py`, `tests/test_access_control.py`, `tests/test_ledger_zero_sum.py`.
 
 ## Modification and subsystem scope
 
-Keep authorization in shared reads rather than relying on the HTML account selector. Preserve entry-ID ordering and route-specific limits when changing history behavior. Balance changes should come from [transfers](transfers.md), not direct balance storage. Sources: `app/ledger.py`, `app/routes/api.py`, `app/routes/pages.py`, `AGENTS.md`.
+Keep authorization in shared reads rather than relying on the HTML account selector. A fix for the statement export would route it through `list_entries` (or an owner-checked equivalent) in `app/ledger.py`. Preserve entry-ID ordering and route-specific limits when changing history behavior. Balance changes should come from [transfers](transfers.md), not direct balance storage. Sources: `app/ledger.py`, `app/routes/api.py`, `app/routes/pages.py`, `AGENTS.md`.
 
 Exact implementation scope: **4 files**, `app/ledger.py`, `app/seed.py`, `app/routes/api.py`, `app/routes/pages.py`. Exact selected test scope: **3 modules**, `tests/test_access_control.py`, `tests/test_system_account.py`, `tests/test_ledger_zero_sum.py`. Test-to-code file ratio: **3/4 = 0.75**. Counts include whole shared modules, exclude templates/schema/fixtures, and do not measure coverage. These four implementation paths have **one unique human author** in `origin/main` history after filtering names containing `[bot]`.
 
@@ -43,7 +45,7 @@ Exact implementation scope: **4 files**, `app/ledger.py`, `app/seed.py`, `app/ro
 | --- | --- |
 | `app/ledger.py` | Derived balances, ownership checks, ordered entries and global sum |
 | `app/seed.py` | Balanced opening funding and demo account definitions |
-| `app/routes/api.py` | API read limits and admin reconciliation |
+| `app/routes/api.py` | API read limits, unfiltered statement export and admin reconciliation |
 | `app/routes/pages.py` | HTML account selection and history limit |
 | `tests/test_access_control.py` | Ownership, current admin state and auth transport regressions |
 | `tests/test_system_account.py` | System-account invisibility and endpoint restrictions |

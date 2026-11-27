@@ -8,15 +8,19 @@ The rules in `AGENTS.md` protect money movement and authentication boundaries. M
 - Send ordinary transfers through `execute_transfer` in `app/ledger.py`. Routes must not insert ledger entries.
 - Keep the debit, credit, and transfer row in one transaction. `pool.connection()` in `app/ledger.py` commits on success and rolls back on exceptions.
 - Lock both accounts in ascending ID order before checking the source balance. Preserve that ordering for all cooperating transfer writers.
-- Reject ownerless system funding accounts as transfer endpoints. Direct balanced funding writes in `app/seed.py` are a seed operation, not a pattern for routes.
+- Reject ownerless system funding accounts as transfer endpoints. Direct balanced funding writes in `app/seed.py` and isolated fixtures in `tools/qa_harness.py` are bootstrap/test operations, not a pattern for routes.
 
 The deferred balance trigger in `db/schema.sql` runs at commit, so a successful insert statement alone does not prove the transaction will commit. Preserve tests that inspect committed state and concurrent outcomes. See [Transfers](../features/transfers.md).
 
+`account_balance` in `app/ledger.py` reads a derived balance on an existing connection; `tests/helpers.py` and `tools/qa_harness.py` share it. Callers that adjust a balance must lock the affected account rows before reading it. Harness fixtures lock the complete account batch in ascending ID order and then add balanced adjustments (`tests/test_qa_harness.py`). Keep this local-only exception confined to the [QA harness](../features/qa-harness.md), whose target guards must never be bypassed.
+
 ## Input and errors
 
-`app/routes/api.py` uses Pydantic request/response models and bounded headers/query parameters. `app/routes/pages.py` parses form strings explicitly, then renders full HTML or htmx fragments. Both call the same ledger functions instead of copying business rules.
+`app/routes/api.py` uses Pydantic request/response models and bounded headers/query parameters. `app/routes/pages.py` parses form strings explicitly, then renders full HTML or htmx fragments. Both call the same ledger functions instead of copying business rules. The `statement` handler in `app/routes/api.py` breaks this rule: it runs SQL in the route and skips the owner check. Do not copy it; add new account reads to `app/ledger.py` with an owner filter (see [Security](../security.md#known-gaps)).
 
-`TransferError` subclasses in `app/ledger.py` define expected transfer failures. Account-not-found errors map to 404; invalid input, insufficient funds, and idempotency conflicts map to 422. Do not substitute a different response code without updating callers and tests.
+`TransferError` subclasses in `app/ledger.py` define expected transfer failures. The JSON API maps account-not-found errors to 404 and other business errors to 422 (`app/routes/api.py`). The HTML route deliberately maps every caught business error to the same generic 422 message: “We could not complete this transfer. Check the recipient and your balance.” Do not expose the exception text or API status distinctions in browser responses (`app/routes/pages.py`, `tests/test_recipient_lookup.py`, `tests/test_transfer_errors.py`). Local form-validation errors remain specific.
+
+Record UI attempts only after CSRF validation, before recipient lookup or money movement. Keep the `transfer_retry_after` upsert in `app/rate_limits.py` in a separate committed transaction so failures and replays count too. Preserve the per-user fixed window across sessions/workers, `429` plus `Retry-After`, and the submitted key on blocked attempts. This limiter does not apply to JSON transfers or login (`app/routes/pages.py`, `tests/test_transfer_rate_limits.py`).
 
 `authenticate` in `app/auth.py` normalizes email and handles database/pool failures with a generic application error. Its log includes only the exception class, not the exception message or traceback. Preserve indistinguishable responses for unknown credentials and ambiguous/missing recipients (`app/auth.py`, `app/ledger.py`).
 
@@ -28,6 +32,8 @@ Every form POST needs CSRF, including login and logout. Reuse `require_csrf`, `r
 
 `app/templates/base.html` enables htmx swapping for error responses. `app/templates/_transfer_result.html` can replace the hidden idempotency key out of band. Keep plain form submission working as well as htmx.
 
+Style the UI through the custom properties at the top of `app/static/style.css` (`--navy`, `--peach` and the rest) and the shared `.card`, `.panel`, `.layout`, `.btn`, `.pill`, `.kv`, `.dotted`, `.badge`, `.empty`, `.muted`, `.ok`, `.error`, `.credit` and `.debit` classes instead of inline styles. The one exception is the history activity bars in `app/templates/history.html`, whose per-entry `height` is a computed inline style. Values the ledger does not model, such as a non-"Posted" status or monthly totals, are hard-coded or computed in templates today; do not present new ones as ledger data without adding them to `app/ledger.py` first. When a stylesheet change must reach browsers that cached the old file, bump the `?v=` value on the stylesheet link in `app/templates/base.html`. See [Web interface](../features/web-interface.md#branding-and-styling).
+
 ## Python and SQL
 
 `pyproject.toml` targets Python 3.12 with a 100-column Ruff configuration. Selected rule families are E, F, I, B, UP, and SIM; FastAPI dependency/form defaults have an explicit immutable-call exception. `app/static/` is excluded from Ruff.
@@ -36,8 +42,14 @@ Use `%s` query parameters for values, as in `app/ledger.py`. Use identifier comp
 
 `db/schema.sql` is idempotent and is applied by seed/tests. Schema edits must preserve repeated application and existing-user behavior; there is no separate migration framework (`app/db.py`, `app/seed.py`, `tests/test_admin_seed.py`).
 
+## QA reporting
+
+Keep browser-tool failures separate from application failures. `.factory/skills/qa/scripts/qa-tools.sh` deliberately exits zero for installation and preflight findings so the informational QA job can publish a report. `.factory/skills/qa/SKILL.md` requires reading `qa-results/preflight.txt` on each affected CI web run: missing output or `QA_PREFLIGHT: BLOCKED` blocks browser flows; `APP_FAIL` records are application failures, regardless of the header. Continue affected API flows, and never substitute curl for blocked browser coverage.
+
+Only trusted setup steps install the pinned browser stack. The keyed agent must not run the installer, repair tooling, or execute checkout code. Preserve the offline reporting regressions in `tests/test_qa_tools.py` and the base-branch instruction boundary in `.github/workflows/qa.yml`. See [Testing](testing.md) and [Tooling](tooling.md).
+
 ## Change discipline
 
-`AGENTS.md` requires tests with every code change and forbids deleting, skipping, or weakening tests to make a change pass. Ask before adding dependencies or downloading tools. Keep secrets out of tracked files, logs, and reports.
+`AGENTS.md` requires tests with every code change and forbids deleting, skipping, or weakening tests to make a change pass. Ask before adding dependencies or downloading tools. Keep secrets out of tracked files, logs, and reports. New settings belong in `.env.example` with placeholder values, not as real defaults in `app/config.py`. Credentials follow `payments_gateway_api_key`: a `SecretStr` with no default and a validator that rejects blank values, with `hide_input_in_errors=True` keeping values out of error messages. Tests, `.factory/skills/qa/scripts/qa-server.sh` and `tools/qa_harness.py` supply their own dummy values (`tests/test_gateway_config.py`).
 
 Before committing, run `uv run ruff check .`, `uv run ruff format --check .`, and `uv run pytest`. For fixture patterns and functional QA, see [Testing](testing.md) and [Development workflow](development-workflow.md).

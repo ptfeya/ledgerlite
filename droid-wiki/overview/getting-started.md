@@ -19,7 +19,7 @@ openssl rand -hex 32
 
 Put the generated value in `JWT_SECRET` in `.env`. Do not commit that file or paste its contents into logs. `app/config.py` requires a secret of at least 16 characters, but length alone does not make a placeholder safe.
 
-Set `PAYMENTS_GATEWAY_API_KEY` before seeding or starting the app. It must not be blank. Use a dummy value only in isolated development or testing; use approved secret injection in other environments.
+Also set `PAYMENTS_GATEWAY_API_KEY` in `.env` before seeding or starting the app. `.env.example` leaves it empty, and `app/config.py` rejects a missing, empty or whitespace-only value. Use a dummy value only for isolated local development or testing; outside that, inject the real credential through the approved secret store (`README.md`).
 
 Keep the `POSTGRES_*` values and `DATABASE_URL` consistent. If changing ports, change both `POSTGRES_PORT` and the URL. Choose a local `SEED_PASSWORD` for the demo users (`.env.example`, `docker-compose.yml`, `app/config.py`).
 
@@ -43,6 +43,8 @@ Use the password configured by `SEED_PASSWORD`. `app/seed.py` funds these balanc
 
 Seeding is safe to repeat, but it is **not a reset**: `seed` in `app/seed.py` skips demo creation whenever any user already exists. Changing `SEED_PASSWORD` does not rotate existing passwords.
 
+For an existing checkout/database, reapply the schema with `uv run python -m app.seed` before using the updated UI transfer route. `db/schema.sql` now includes `transfer_rate_limits`; server startup does not create it. Schema reapplication preserves existing rate-limit counters as well as ledger data (`app/db.py`, `app/seed.py`, `tests/test_transfer_rate_limits.py`).
+
 ## Optional local admin
 
 ```sh
@@ -50,6 +52,23 @@ uv run python -m app.seed --admin-email admin@example.com
 ```
 
 `seed_admin` in `app/seed.py` creates or promotes that user. A new admin has no accounts and receives the seed password; promotion preserves an existing password and accounts. Ordinary seeding neither grants nor revokes admin access.
+
+## Optional isolated QA
+
+With Postgres and the approved Python environment ready, `tools/qa_harness.py` can run a separate local instance:
+
+```sh
+uv run python -m tools.qa_harness up
+uv run python -m tools.qa_harness status
+# Use the returned base_url for local requests.
+uv run python -m tools.qa_harness down
+```
+
+The harness loads application settings itself, so `.env` needs a nonblank (dummy) `PAYMENTS_GATEWAY_API_KEY`; the app process it starts gets its own dummy value. This uses `<base>_harness`, not the development database or the shell QA server's `<base>_qa`. Run it only locally, without `FACTORY_API_KEY` or `QA_EVIDENCE_TOKEN` in the environment. Do not bypass that guard in a keyed CI agent. Always finish with `down`; see [QA harness](../features/qa-harness.md) and `tools/README.md` for fixtures, outages, and reset semantics.
+
+## Browser QA prerequisites
+
+For local functional browser QA, the approved browser tooling must already be installed. `.factory/skills/qa/SKILL.md` checks `agent-browser --version` and `agent-browser doctor --offline --quick`; a failure means browser coverage is BLOCKED. The CI installer in `.factory/skills/qa/scripts/qa-tools.sh` is not a command for a secret-holding QA agent. Ask before downloads, as required by `AGENTS.md`; see [Tooling](../how-to-contribute/tooling.md).
 
 ## Run checks
 
@@ -62,5 +81,7 @@ uv run pytest
 ```
 
 `tests/conftest.py` recreates a database derived from `DATABASE_URL`, normally `ledgerlite_test`. It needs database-creation privileges and must run only on a disposable local/test server. It resets data before each test. Do not point tests at a shared or production Postgres instance.
+
+On macOS, `tests/test_qa_harness.py` and `tests/test_qa_tools.py` are skipped because they need Linux (Bash 4+ and the Linux Chrome build); the rest of the suite runs. CI on Ubuntu runs all of them (`.github/workflows/ci.yml`).
 
 See [Testing](../how-to-contribute/testing.md), [Configuration](../reference/configuration.md), and [Debugging](../how-to-contribute/debugging.md) for details.

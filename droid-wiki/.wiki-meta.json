@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-11-17T15:38:39.453Z",
-  "commitHash": "5cf0fa6e5df944dca6aadd15a13c2bcf72a28500",
+  "generatedAt": "2026-11-27T23:12:00Z",
+  "commitHash": "f911a8585ecc8e1c9c2c582d20a38b84337654ee",
   "branch": "main",
-  "pageCount": 24,
+  "pageCount": 25,
   "topLevelSections": [
     "overview",
     "by-the-numbers",
@@ -32,6 +32,7 @@
     "features/transfers.md",
     "features/accounts-and-history.md",
     "features/web-interface.md",
+    "features/qa-harness.md",
     "api.md",
     "deployment.md",
     "security.md",
@@ -42,12 +43,16 @@
     "reference/dependencies.md"
   ],
   "warnings": [
-    "Phase 3.5 skipped: neither agent-browser nor tuistory is available. QA app entries also have no dev_command."
+    "Phase 3.5 skipped: neither agent-browser nor tuistory is available. QA app entries also have no dev_command.",
+    "Incremental update for f911a85 (#31, Peachtree UI refinement: tab bar with active-page marking, Bank accounts panel with security card, monthly deposit and withdrawal totals on history; templates and CSS only; 145 changed lines in 4 files since 6077bfb): refreshed features/web-interface, features/accounts-and-history, how-to-contribute/patterns-and-conventions and by-the-numbers. Lore was left unchanged because the change is small.",
+    "python-multipart 0.0.34 postdates every upstream advisory listed at generation time, but each advisory's affected range was not checked individually.",
+    "The earlier credential-like payments_gateway_api_key default remains in Git history; the wiki describes it without reproducing the value.",
+    "No dependencies or tools were downloaded, because AGENTS.md requires approval before network downloads."
   ],
   "videoOverview": {
-    "status": "failed",
+    "status": "skipped",
     "warnings": [
-      "hyperframes doctor failed (exit 127): HyperFrames is not installed. FFmpeg and FFprobe are also unavailable. No tools were downloaded because AGENTS.md requires approval."
+      "No prior playable video exists in remote wiki history (13 runs checked). Generating one needs HyperFrames, a headless browser, FFmpeg/FFprobe and a local TTS engine, none of which are installed; installing them would need a network download, which AGENTS.md requires approval for."
     ]
   }
 }
